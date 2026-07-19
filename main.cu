@@ -29,22 +29,26 @@ __host__ __device__ static uint32_t xorshift32(uint32_t *state) {
 
 // ─── 棋盘快照 ────────────────────────────────────────────────────────
 __host__ __device__ static void copy_grid(const int *src, int *dst) {
+#pragma unroll
     for (int i = 0; i < 16; i++) dst[i] = src[i];
 }
 
 __host__ __device__ static bool grid_equal(const int *a, const int *b) {
+#pragma unroll
     for (int i = 0; i < 16; i++) if (a[i] != b[i]) return false;
     return true;
 }
 
 __host__ __device__ static int count_empty(const int *grid) {
     int cnt = 0;
+#pragma unroll
     for (int i = 0; i < 16; i++) if (grid[i] == 0) cnt++;
     return cnt;
 }
 
 __host__ __device__ static int max_value_log2(const int *grid) {
     int mx = 0;
+#pragma unroll
     for (int i = 0; i < 16; i++) if (grid[i] > mx) mx = grid[i];
     if (mx <= 0) return 0;
     int log = 0;
@@ -62,6 +66,7 @@ __host__ __device__ static int slide_line(int *arr) {
     int score = 0;
     bool merged[4] = {false, false, false, false};
 
+#pragma unroll
     for (int i = 0; i < 4; i++) {
         if (arr[i] == 0) continue;
 
@@ -230,21 +235,60 @@ __host__ __device__ static inline int ilog2(int v) {
 }
 
 // ─── OI-2048 得分驱动评估（pos_w 由调用方预计算）──────────────────────────
-__host__ __device__ static float evaluate(const int *grid, const float *pos_w) {
+__host__ __device__ static float evaluate(const int *grid, const float *pos_w, int cr, int cc) {
     float score = 0.0f;
     int empty_cnt = 0;
+    int max_val = 0;
 
-    // 单次遍历：空格计数 + 位置权重
+    // 位置权重 + 空格计数
+#pragma unroll
     for (int i = 0; i < 16; i++) {
         int v = grid[i];
         if (v == 0) { empty_cnt++; continue; }
-        if (v > 0) score += static_cast<float>(ilog2(v)) * pos_w[i];
+        if (v > 0) {
+            score += static_cast<float>(ilog2(v)) * pos_w[i];
+            if (v > max_val) max_val = v;
+        }
     }
-    score += static_cast<float>(empty_cnt) * 24.0f;
 
-    // 倍率合并潜力（-2 比 -1 获得更高权重）
+    // 自适应空格奖励：后期空格更珍贵
+    float empty_bonus = 24.0f;
+    if (max_val > 0) empty_bonus += static_cast<float>(ilog2(max_val)) * 3.0f;
+    score += static_cast<float>(empty_cnt) * empty_bonus;
+
+    // 单调性 + 平滑度（合并为一次遍历）
+    int row_sign = (cc == 3) ? -1 : 1;
+    int col_sign = (cr == 3) ? -1 : 1;
+#pragma unroll
+    for (int r = 0; r < 4; r++) {
+#pragma unroll
+        for (int c = 0; c < 3; c++) {
+            int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
+            if (a > 0 && b > 0) {
+                int la = ilog2(a), lb = ilog2(b);
+                score -= static_cast<float>(la > lb ? la - lb : lb - la) * 0.8f;
+                score += (a >= b ? 1 : -1) * row_sign * static_cast<float>(la) * 0.5f;
+            }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < 4; c++) {
+#pragma unroll
+        for (int r = 0; r < 3; r++) {
+            int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
+            if (a > 0 && b > 0) {
+                int la = ilog2(a), lb = ilog2(b);
+                score -= static_cast<float>(la > lb ? la - lb : lb - la) * 0.8f;
+                score += (a >= b ? 1 : -1) * col_sign * static_cast<float>(la) * 0.5f;
+            }
+        }
+    }
+
+    // 倍率合并潜力
+#pragma unroll
     for (int i = 0; i < 16; i++) {
-        if (grid[i] >= -2 && grid[i] <= -1) {
+        int v = grid[i];
+        if (v >= -2 && v <= -1) {
             int r = i >> 2, c = i & 3;
             int best_nbr = 0;
             if (r > 0 && grid[i - 4] > 0) best_nbr = max(best_nbr, grid[i - 4]);
@@ -252,19 +296,33 @@ __host__ __device__ static float evaluate(const int *grid, const float *pos_w) {
             if (c > 0 && grid[i - 1] > 0) best_nbr = max(best_nbr, grid[i - 1]);
             if (c < 3 && grid[i + 1] > 0) best_nbr = max(best_nbr, grid[i + 1]);
             if (best_nbr > 0) {
-                score += static_cast<float>(ilog2((-grid[i]) * best_nbr)) * 6.0f;
+                score += static_cast<float>(ilog2((-v) * best_nbr)) * 6.0f;
+            }
+        } else if (v <= -8) {
+            int r = i >> 2, c = i & 3;
+            int best_nbr = 0;
+            if (r > 0 && grid[i - 4] > 0) best_nbr = max(best_nbr, grid[i - 4]);
+            if (r < 3 && grid[i + 4] > 0) best_nbr = max(best_nbr, grid[i + 4]);
+            if (c > 0 && grid[i - 1] > 0) best_nbr = max(best_nbr, grid[i - 1]);
+            if (c < 3 && grid[i + 1] > 0) best_nbr = max(best_nbr, grid[i + 1]);
+            if (best_nbr > 0 && (-v) * best_nbr <= 65536) {
+                score += static_cast<float>(ilog2((-v) * best_nbr)) * 8.0f;
             }
         }
     }
 
     // 普通合并潜力
+#pragma unroll
     for (int r = 0; r < 4; r++) {
+#pragma unroll
         for (int c = 0; c < 3; c++) {
             int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
             if (a > 0 && a == b) score += static_cast<float>(ilog2(a)) * 2.0f;
         }
     }
+#pragma unroll
     for (int c = 0; c < 4; c++) {
+#pragma unroll
         for (int r = 0; r < 3; r++) {
             int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
             if (a > 0 && a == b) score += static_cast<float>(ilog2(a)) * 2.0f;
@@ -283,22 +341,20 @@ namespace {
     };
 }
 
-__global__ static void simulate_games(uint64_t base_seed, int target_score,
-                                      SimResult *results) {
+__global__ __launch_bounds__(256, 4) static void simulate_games(uint64_t base_seed,
+        int target_score, SimResult *results) {
     int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
     if (tid >= NUM_THREADS) return;
 
-    // 每个线程预计算位置权重（基于 tid % 4 决定的角落偏好）
+    int strategy = tid & 3;
+    int cr = (strategy >= 2) ? 3 : 0;
+    int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
     float pos_w[16];
-    {
-        int strategy = tid & 3; // 0=左上 1=右上 2=左下 3=右下
-        int cr = (strategy >= 2) ? 3 : 0;
-        int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
-        for (int i = 0; i < 16; i++) {
-            int r = i >> 2, c = i & 3;
-            int dist = abs(r - cr) + abs(c - cc);
-            pos_w[i] = (30.0f - static_cast<float>(dist) * 4.0f) * 0.25f;
-        }
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+        int r = i >> 2, c = i & 3;
+        int dist = abs(r - cr) + abs(c - cc);
+        pos_w[i] = powf(0.62f, static_cast<float>(dist)) * 12.0f;
     }
 
     auto rng = static_cast<uint32_t>(base_seed + tid * 2654435761ULL);
@@ -310,26 +366,33 @@ __global__ static void simulate_games(uint64_t base_seed, int target_score,
     int score = 0;
     int steps = 0;
 
-    while (can_move(grid) && steps < MAX_STEPS) {
+    while (true) {
         float best_eval = -1e9f;
         int best_dir = -1;
+        int best_temp[16];
+        int best_move_score = 0;
 
+#pragma unroll
         for (int dir = 0; dir < 4; dir++) {
             int temp[16];
             copy_grid(grid, temp);
             bool moved;
-            apply_move(temp, dir, &moved);
+            int move_score = apply_move(temp, dir, &moved);
             if (!moved) continue;
-            float e = evaluate(temp, pos_w);
+            float e = evaluate(temp, pos_w, cr, cc);
             if (e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
+                copy_grid(temp, best_temp);
+                best_move_score = move_score;
             }
         }
 
         if (best_dir < 0) break;
+        if (steps >= MAX_STEPS) break;
 
-        score += apply_move(grid, best_dir);
+        copy_grid(best_temp, grid);
+        score += best_move_score;
         add_random_tile(grid, &rng);
         steps++;
 
@@ -364,15 +427,13 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
     res.steps = 0;
     res.history.clear();
 
+    int cr = (strategy >= 2) ? 3 : 0;
+    int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
     float pos_w[16];
-    {
-        int cr = (strategy >= 2) ? 3 : 0;
-        int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
-        for (int i = 0; i < 16; i++) {
-            int r = i >> 2, c = i & 3;
-            int dist = abs(r - cr) + abs(c - cc);
-            pos_w[i] = (30.0f - static_cast<float>(dist) * 4.0f) * 0.25f;
-        }
+    for (int i = 0; i < 16; i++) {
+        int r = i >> 2, c = i & 3;
+        int dist = abs(r - cr) + abs(c - cc);
+        pos_w[i] = powf(0.62f, static_cast<float>(dist)) * 12.0f;
     }
 
     uint32_t rng = rng_seed;
@@ -396,7 +457,7 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
             bool moved;
             apply_move(temp, dir, &moved);
             if (!moved) continue;
-            float e = evaluate(temp, pos_w);
+            float e = evaluate(temp, pos_w, cr, cc);
             if (e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
