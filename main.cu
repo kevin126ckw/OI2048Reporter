@@ -1,8 +1,6 @@
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <ctime>
 #include <cmath>
 #include <cstdint>
@@ -200,8 +198,8 @@ __host__ __device__ float evaluate(const int *grid) {
     float score = (float)(empty_cnt) * 16.0f;
 
     int corners[4] = {grid[0], grid[3], grid[12], grid[15]};
-    for (int i = 0; i < 4; i++) {
-        if (corners[i] > 0) score += (float)(corners[i]) * 0.005f;
+    for (int & corner : corners) {
+        if (corner > 0) score += (float)corner * 0.005f;
     }
 
     for (int r = 0; r < 4; r++) {
@@ -401,7 +399,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int target_score = 80000;
+    int target_score = 100000;
     if (argc >= 2) target_score = atoi(argv[1]);
     printf("目标分数: %d\n", target_score);
     printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
