@@ -404,9 +404,17 @@ int main(int argc, char *argv[]) {
     printf("目标分数: %d\n", target_score);
     printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
 
-    SimResult *d_results;
-    cudaMalloc(&d_results, NUM_THREADS * sizeof(SimResult));
-    cudaMemset(d_results, 0, NUM_THREADS * sizeof(SimResult));
+    SimResult *d_results[2];
+    SimResult *h_results[2];
+    cudaStream_t stream[2];
+
+    for (int i = 0; i < 2; i++) {
+        cudaMalloc(&d_results[i], NUM_THREADS * sizeof(SimResult));
+        cudaMemset(d_results[i], 0, NUM_THREADS * sizeof(SimResult));
+        cudaHostAlloc(&h_results[i], NUM_THREADS * sizeof(SimResult),
+                      cudaHostAllocDefault);
+        cudaStreamCreate(&stream[i]);
+    }
 
     uint64_t base_seed = (uint64_t)time(nullptr);
 
@@ -415,33 +423,51 @@ int main(int argc, char *argv[]) {
     int best_tid = -1;
     int best_batch = -1;
 
-    for (int batch = 0; batch < SEARCH_BATCHES && !found; batch++) {
-        simulate_games<<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(
-            base_seed + batch * NUM_THREADS, target_score, d_results);
-        cudaDeviceSynchronize();
-
-        SimResult *h_results = new SimResult[NUM_THREADS];
-        cudaMemcpy(h_results, d_results, NUM_THREADS * sizeof(SimResult),
-                   cudaMemcpyDeviceToHost);
-
+    auto process_batch = [&](int slot, int batch) {
         for (int i = 0; i < NUM_THREADS; i++) {
-            if (h_results[i].score > best_score) {
-                best_score = h_results[i].score;
+            if (h_results[slot][i].score > best_score) {
+                best_score = h_results[slot][i].score;
                 best_tid = i;
                 best_batch = batch;
             }
-            if (h_results[i].score >= target_score) {
-                best_score = h_results[i].score;
+            if (h_results[slot][i].score >= target_score) {
+                best_score = h_results[slot][i].score;
                 best_tid = i;
                 best_batch = batch;
                 found = true;
-                break;
+                printf("批次 %d: 最高 %d 分 [已达标!]\n", batch, best_score);
+                return;
             }
         }
-        delete[] h_results;
+        printf("批次 %d: 最高 %d 分\n", batch, best_score);
+    };
 
-        printf("批次 %d: 当前最高 %d 分%s\n", batch, best_score,
-               found ? " [已达标!]" : "");
+    for (int batch = 0; batch < SEARCH_BATCHES && !found; batch++) {
+        int cur = batch % 2;
+
+        if (batch >= 2) {
+            cudaStreamSynchronize(stream[cur]);
+            process_batch(cur, batch - 2);
+        }
+
+        simulate_games<<<NUM_BLOCKS, THREADS_PER_BLOCK, 0, stream[cur]>>>(
+            base_seed + batch * NUM_THREADS, target_score, d_results[cur]);
+        cudaMemcpyAsync(h_results[cur], d_results[cur],
+                        NUM_THREADS * sizeof(SimResult),
+                        cudaMemcpyDeviceToHost, stream[cur]);
+    }
+
+    for (int i = 0; i < 2; i++)
+        cudaStreamSynchronize(stream[i]);
+
+    int first_unprocessed = (SEARCH_BATCHES >= 2) ? (SEARCH_BATCHES - 2) : 0;
+    for (int batch = first_unprocessed; batch < SEARCH_BATCHES && !found; batch++)
+        process_batch(batch % 2, batch);
+
+    for (int i = 0; i < 2; i++) {
+        cudaFree(d_results[i]);
+        cudaFreeHost(h_results[i]);
+        cudaStreamDestroy(stream[i]);
     }
 
     if (!found) {
@@ -477,6 +503,5 @@ int main(int argc, char *argv[]) {
         printf("\n无法写入文件！\n");
     }
 
-    cudaFree(d_results);
     return 0;
 }
