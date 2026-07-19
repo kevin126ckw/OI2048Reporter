@@ -47,8 +47,8 @@ def slide_line(arr: list) -> int:
                 arr[i] = 0
                 merged[prev] = True
                 did_merge = True
-            # 倍增方块合并：必须 i == prev + 1（原始相邻）
-            elif i == prev + 1:
+            # 倍增方块合并：服务端 is_adj 豁免 <= -8 的方块
+            elif i == prev + 1 or a <= -8 or b <= -8:
                 if a > 0 and b <= -1 and -b * a <= 65536:
                     arr[prev] = -b * a
                     score += arr[prev]

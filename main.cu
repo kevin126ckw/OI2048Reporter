@@ -12,7 +12,7 @@ constexpr int MAX_STEPS = 2048;
 constexpr int THREADS_PER_BLOCK = 256;
 constexpr int NUM_BLOCKS = 1024;
 constexpr int NUM_THREADS = THREADS_PER_BLOCK * NUM_BLOCKS; // 65536
-constexpr int SEARCH_BATCHES = 32;
+constexpr int SEARCH_BATCHES = 64;
 
 using std::string;
 
@@ -84,8 +84,8 @@ __host__ __device__ int slide_line(int *arr) {
                 merged[prev] = true;
                 did_merge = true;
             }
-            // 倍增方块合并：必须 i == prev + 1（原始相邻）
-            else if (i == prev + 1) {
+            // 倍增方块合并：服务端 is_adj 豁免 <= -8 的方块
+            else if (i == prev + 1 || a <= -8 || b <= -8) {
                 if (a > 0 && b <= -1 && -b * a <= 65536) {
                     arr[prev] = -b * a;
                     score += arr[prev];
@@ -171,6 +171,31 @@ __host__ __device__ bool can_move(const int *grid) {
             if (a <= -1 && b > 0 && (-a) * b <= 65536) return true;
             if (a > 0 && b <= -1 && (-b) * a <= 65536) return true;
             if (a == b && a <= 32768 && a >= -2) return true;
+        }
+    }
+    // 检查非相邻的倍率合并（<= -8 豁免规则）
+    for (int r = 0; r < 4; r++) {
+        for (int c1 = 0; c1 < 4; c1++) {
+            int a = grid[r * 4 + c1];
+            if (a == 0) continue;
+            for (int c2 = c1 + 2; c2 < 4; c2++) {
+                int b = grid[r * 4 + c2];
+                if (b == 0) continue;
+                if (a <= -1 && a <= -8 && b > 0 && (-a) * b <= 65536) return true;
+                if (b <= -1 && b <= -8 && a > 0 && (-b) * a <= 65536) return true;
+            }
+        }
+    }
+    for (int c = 0; c < 4; c++) {
+        for (int r1 = 0; r1 < 4; r1++) {
+            int a = grid[r1 * 4 + c];
+            if (a == 0) continue;
+            for (int r2 = r1 + 2; r2 < 4; r2++) {
+                int b = grid[r2 * 4 + c];
+                if (b == 0) continue;
+                if (a <= -1 && a <= -8 && b > 0 && (-a) * b <= 65536) return true;
+                if (b <= -1 && b <= -8 && a > 0 && (-b) * a <= 65536) return true;
+            }
         }
     }
     return false;
@@ -323,7 +348,8 @@ HostSimResult replay_game(uint32_t rng_seed, int target_score = -1) {
         res.history.push_back(entry);
         res.steps++;
 
-        if (target_score > 0 && res.score >= target_score) break;
+        // GPU 模拟用 target_score 找到达标的种子，
+        // 但 Host 回放需要走到自然结束（游戏规则要求通关或无合法移动才能提交）
     }
 
     copy_grid(grid, res.final_grid);
