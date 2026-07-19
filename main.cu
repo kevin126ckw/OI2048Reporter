@@ -12,7 +12,7 @@
 constexpr int GRID_SIZE = 4;
 constexpr int MAX_STEPS = 2048;
 constexpr int THREADS_PER_BLOCK = 256;
-constexpr int NUM_BLOCKS = 256;
+constexpr int NUM_BLOCKS = 1024;
 constexpr int NUM_THREADS = THREADS_PER_BLOCK * NUM_BLOCKS; // 65536
 constexpr int SEARCH_BATCHES = 32;
 
@@ -220,7 +220,6 @@ __host__ __device__ float evaluate(const int *grid) {
 struct SimResult {
     int score;
     int steps;
-    int move_seq[MAX_STEPS];
     int final_grid[16];
 };
 
@@ -259,7 +258,6 @@ __global__ void simulate_games(uint64_t base_seed, int target_score,
 
         score += apply_move(grid, best_dir);
         add_random_tile(grid, &rng);
-        results[tid].move_seq[steps] = best_dir;
         steps++;
 
         if (score >= target_score) break;
