@@ -392,6 +392,8 @@ string generate_submit_data(const HostSimResult &result, bool cheated = false) {
 
 // ─── main ────────────────────────────────────────────────────────────
 int main(int argc, char *argv[]) {
+    srand(time(nullptr));
+
     int cuda_devices;
     cudaGetDeviceCount(&cuda_devices);
     if (cuda_devices == 0) {
