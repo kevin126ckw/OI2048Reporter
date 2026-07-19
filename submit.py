@@ -327,7 +327,7 @@ def main():
 
     print()
     if result.get("success"):
-        print(f"✅ 提交成功！排名: {result}")
+        print(f"✅ 提交成功！排名: {result['data']}")
     else:
         print(f"❌ 提交失败: {result.get('data', '未知原因')}")
 

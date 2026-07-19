@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <random>
 
 constexpr int GRID_SIZE = 4;
 constexpr int MAX_STEPS = 2048;
@@ -17,7 +18,7 @@ constexpr int SEARCH_BATCHES = 256;
 using std::string;
 
 // ─── RNG ────────────────────────────────────────────────────────────
-__host__ __device__ uint32_t xorshift32(uint32_t *state) {
+__host__ __device__ static uint32_t xorshift32(uint32_t *state) {
     uint32_t x = *state;
     x ^= x << 13;
     x ^= x >> 17;
@@ -27,22 +28,22 @@ __host__ __device__ uint32_t xorshift32(uint32_t *state) {
 }
 
 // ─── 棋盘快照 ────────────────────────────────────────────────────────
-__host__ __device__ void copy_grid(const int *src, int *dst) {
+__host__ __device__ static void copy_grid(const int *src, int *dst) {
     for (int i = 0; i < 16; i++) dst[i] = src[i];
 }
 
-__host__ __device__ bool grid_equal(const int *a, const int *b) {
+__host__ __device__ static bool grid_equal(const int *a, const int *b) {
     for (int i = 0; i < 16; i++) if (a[i] != b[i]) return false;
     return true;
 }
 
-__host__ __device__ int count_empty(const int *grid) {
+__host__ __device__ static int count_empty(const int *grid) {
     int cnt = 0;
     for (int i = 0; i < 16; i++) if (grid[i] == 0) cnt++;
     return cnt;
 }
 
-__host__ __device__ int max_value_log2(const int *grid) {
+__host__ __device__ static int max_value_log2(const int *grid) {
     int mx = 0;
     for (int i = 0; i < 16; i++) if (grid[i] > mx) mx = grid[i];
     if (mx <= 0) return 0;
@@ -57,7 +58,7 @@ __host__ __device__ int max_value_log2(const int *grid) {
 //   - 同值合并（≤32768, ≥-2）不需要邻接检查
 //   - 倍增方块合并（正×负）必须原始位置相邻（is_adj）
 // 返回本次行合并获得的分数
-__host__ __device__ int slide_line(int *arr) {
+__host__ __device__ static int slide_line(int *arr) {
     int score = 0;
     bool merged[4] = {false, false, false, false};
 
@@ -113,7 +114,7 @@ __host__ __device__ int slide_line(int *arr) {
 
 // ─── 朝指定方向移动整个棋盘（原地修改），返回本次得分 ──────────────────
 // dir: 0=上, 1=右, 2=下, 3=左
-__host__ __device__ int apply_move(int *grid, int direction, bool *moved_out = nullptr) {
+__host__ __device__ static int apply_move(int *grid, int direction, bool *moved_out = nullptr) {
     int score = 0;
     int backup[16];
     copy_grid(grid, backup);
@@ -153,7 +154,7 @@ __host__ __device__ int apply_move(int *grid, int direction, bool *moved_out = n
 }
 
 // ─── 检查是否还能走 ────────────────────────────────────────────────────
-__host__ __device__ bool can_move(const int *grid) {
+__host__ __device__ static bool can_move(const int *grid) {
     if (count_empty(grid) > 0) return true;
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 3; c++) {
@@ -202,7 +203,7 @@ __host__ __device__ bool can_move(const int *grid) {
 }
 
 // ─── 随机生成新方块 ────────────────────────────────────────────────────
-__host__ __device__ void add_random_tile(int *grid, uint32_t *rng, bool is_start = false) {
+__host__ __device__ static void add_random_tile(int *grid, uint32_t *rng, bool is_start = false) {
     int empty[16];
     int cnt = 0;
     for (int i = 0; i < 16; i++) if (grid[i] == 0) empty[cnt++] = i;
@@ -218,7 +219,7 @@ __host__ __device__ void add_random_tile(int *grid, uint32_t *rng, bool is_start
 }
 
 // ─── log2 快速计算（GPU 用硬件 __clz，CPU 回退到循环）─────────────────────
-__host__ __device__ inline int ilog2(int v) {
+__host__ __device__ static inline int ilog2(int v) {
 #if defined(__CUDA_ARCH__)
     return 31 - __clz((unsigned int)v);
 #else
@@ -229,7 +230,7 @@ __host__ __device__ inline int ilog2(int v) {
 }
 
 // ─── OI-2048 得分驱动评估（pos_w 由调用方预计算）──────────────────────────
-__host__ __device__ float evaluate(const int *grid, const float *pos_w) {
+__host__ __device__ static float evaluate(const int *grid, const float *pos_w) {
     float score = 0.0f;
     int empty_cnt = 0;
 
@@ -237,9 +238,9 @@ __host__ __device__ float evaluate(const int *grid, const float *pos_w) {
     for (int i = 0; i < 16; i++) {
         int v = grid[i];
         if (v == 0) { empty_cnt++; continue; }
-        if (v > 0) score += (float)ilog2(v) * pos_w[i];
+        if (v > 0) score += static_cast<float>(ilog2(v)) * pos_w[i];
     }
-    score += (float)empty_cnt * 24.0f;
+    score += static_cast<float>(empty_cnt) * 24.0f;
 
     // 倍率合并潜力（-2 比 -1 获得更高权重）
     for (int i = 0; i < 16; i++) {
@@ -251,7 +252,7 @@ __host__ __device__ float evaluate(const int *grid, const float *pos_w) {
             if (c > 0 && grid[i - 1] > 0) best_nbr = max(best_nbr, grid[i - 1]);
             if (c < 3 && grid[i + 1] > 0) best_nbr = max(best_nbr, grid[i + 1]);
             if (best_nbr > 0) {
-                score += (float)ilog2((-grid[i]) * best_nbr) * 6.0f;
+                score += static_cast<float>(ilog2((-grid[i]) * best_nbr)) * 6.0f;
             }
         }
     }
@@ -260,29 +261,31 @@ __host__ __device__ float evaluate(const int *grid, const float *pos_w) {
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 3; c++) {
             int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
-            if (a > 0 && a == b) score += (float)ilog2(a) * 2.0f;
+            if (a > 0 && a == b) score += static_cast<float>(ilog2(a)) * 2.0f;
         }
     }
     for (int c = 0; c < 4; c++) {
         for (int r = 0; r < 3; r++) {
             int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
-            if (a > 0 && a == b) score += (float)ilog2(a) * 2.0f;
+            if (a > 0 && a == b) score += static_cast<float>(ilog2(a)) * 2.0f;
         }
     }
 
     return score;
 }
 
-// ─── GPU 内核：并行模拟 ────────────────────────────────────────────────
-struct SimResult {
-    int score;
-    int steps;
-    int final_grid[16];
-};
+namespace {
+    // ─── GPU 内核：并行模拟 ────────────────────────────────────────────────
+    struct SimResult {
+        int score;
+        int steps;
+        int final_grid[16];
+    };
+}
 
-__global__ void simulate_games(uint64_t base_seed, int target_score,
-                               SimResult *results) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ static void simulate_games(uint64_t base_seed, int target_score,
+                                      SimResult *results) {
+    int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
     if (tid >= NUM_THREADS) return;
 
     // 每个线程预计算位置权重（基于 tid % 4 决定的角落偏好）
@@ -294,11 +297,11 @@ __global__ void simulate_games(uint64_t base_seed, int target_score,
         for (int i = 0; i < 16; i++) {
             int r = i >> 2, c = i & 3;
             int dist = abs(r - cr) + abs(c - cc);
-            pos_w[i] = (30.0f - (float)dist * 4.0f) * 0.25f;
+            pos_w[i] = (30.0f - static_cast<float>(dist) * 4.0f) * 0.25f;
         }
     }
 
-    uint32_t rng = (uint32_t)(base_seed + tid * 2654435761ULL);
+    auto rng = static_cast<uint32_t>(base_seed + tid * 2654435761ULL);
     int grid[16] = {0};
 
     add_random_tile(grid, &rng, true);
@@ -338,20 +341,24 @@ __global__ void simulate_games(uint64_t base_seed, int target_score,
     copy_grid(grid, results[tid].final_grid);
 }
 
-// ─── Host 端回放函数 ──────────────────────────────────────────────────
-struct HistoryEntry {
-    int before[16];
-    int after[16];
-};
+namespace {
+    // ─── Host 端回放函数 ──────────────────────────────────────────────────
+    struct HistoryEntry {
+        int before[16];
+        int after[16];
+    };
+}
 
-struct HostSimResult {
-    int score;
-    int steps;
-    std::vector<HistoryEntry> history;
-    int final_grid[16];
-};
+namespace {
+    struct HostSimResult {
+        int score{};
+        int steps{};
+        std::vector<HistoryEntry> history;
+        int final_grid[16]{};
+    };
+}
 
-HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1) {
+static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1) {
     HostSimResult res;
     res.score = 0;
     res.steps = 0;
@@ -364,7 +371,7 @@ HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1
         for (int i = 0; i < 16; i++) {
             int r = i >> 2, c = i & 3;
             int dist = abs(r - cr) + abs(c - cc);
-            pos_w[i] = (30.0f - (float)dist * 4.0f) * 0.25f;
+            pos_w[i] = (30.0f - static_cast<float>(dist) * 4.0f) * 0.25f;
         }
     }
 
@@ -372,8 +379,8 @@ HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1
     int grid[16] = {0};
 
     // 初始状态: before=全空, after=初始两方块
-    HistoryEntry init;
-    for (int i = 0; i < 16; i++) init.before[i] = 0;
+    HistoryEntry init{};
+    for (int & i : init.before) i = 0;
     add_random_tile(grid, &rng, true);
     add_random_tile(grid, &rng, true);
     copy_grid(grid, init.after);
@@ -398,7 +405,7 @@ HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1
 
         if (best_dir < 0) break;
 
-        HistoryEntry entry;
+        HistoryEntry entry{};
         res.score += apply_move(grid, best_dir);
         copy_grid(grid, entry.before);  // 移动后、新方块前
         add_random_tile(grid, &rng);
@@ -415,67 +422,67 @@ HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1
 }
 
 // ─── 随机字符串生成 ────────────────────────────────────────────────────
-string generate_gameid() {
-    static const char charset[] = "0123456789qwertyuiopasdfghjklzxcvbnm";
+static string generate_gameid() {
+    static constexpr char charset[] = "0123456789qwertyuiopasdfghjklzxcvbnm";
+    static std::mt19937 rng(std::random_device{}());
+    static std::uniform_int_distribution<int> dist(0, 35);
     string id;
-    for (int i = 0; i < 16; i++) id += charset[rand() % 36];
+    for (int i = 0; i < 16; i++) id += charset[dist(rng)];
     return id;
 }
 
 // ─── JSON 格式化 ──────────────────────────────────────────────────────
-string grid_to_json(const int *grid) {
+static string grid_to_json(const int *grid) {
     string s = "[";
     for (int r = 0; r < 4; r++) {
-        s += "[";
+        s += '[';
         for (int c = 0; c < 4; c++) {
             int v = grid[r * 4 + c];
             if (v == 0) s += "null";
             else s += std::to_string(v);
-            if (c < 3) s += ",";
+            if (c < 3) s += ',';
         }
-        s += "]";
-        if (r < 3) s += ",";
+        s += ']';
+        if (r < 3) s += ',';
     }
-    s += "]";
+    s += ']';
     return s;
 }
 
-string history_to_json(const std::vector<HistoryEntry> &history) {
+static string history_to_json(const std::vector<HistoryEntry> &history) {
     string s = "[";
     for (size_t i = 0; i < history.size(); i++) {
-        s += "[";
+        s += '[';
         s += grid_to_json(history[i].before);
-        s += ",";
+        s += ',';
         s += grid_to_json(history[i].after);
-        s += "]";
-        if (i + 1 < history.size()) s += ",";
+        s += ']';
+        if (i + 1 < history.size()) s += ',';
     }
-    s += "]";
+    s += ']';
     return s;
 }
 
-string generate_submit_data(const HostSimResult &result, bool cheated = false) {
+static string generate_submit_data(const HostSimResult &result, bool cheated = false) {
     string gameid = generate_gameid();
     int mv = max_value_log2(result.final_grid);
     string fg_json = grid_to_json(result.final_grid);
 
     string data = "{";
-    data += "\"gameid\":\"" + gameid + "\",";
-    data += "\"finalGrid\":\"" + fg_json + "\",";
+    data += R"("gameid":")" + gameid + "\",";
+    data += R"("finalGrid":")" + fg_json + "\",";
     data += "\"maxValueLog\":" + std::to_string(mv) + ",";
     data += "\"steps\":" + std::to_string(result.steps) + ",";
-    data += "\"history\":\"" + history_to_json(result.history) + "\",";
+    data += R"("history":")" + history_to_json(result.history) + "\",";
     data += "\"score\":" + std::to_string(result.score) + ",";
-    data += "\"scoreStringForReference\":\"" + std::to_string(result.score) + "\",";
+    data += R"("scoreStringForReference":")" + std::to_string(result.score) + "\",";
     data += "\"cheated\":" + string(cheated ? "true" : "false");
-    data += "}";
+    data += '}';
     return data;
 }
 
 // ─── main ────────────────────────────────────────────────────────────
 int main(int argc, char *argv[]) {
-    srand(time(nullptr));
-
     int cuda_devices;
     cudaGetDeviceCount(&cuda_devices);
     if (cuda_devices == 0) {
@@ -483,8 +490,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int target_score = 333554;
-    if (argc >= 2) target_score = atoi(argv[1]);
+    int target_score = 551144;
+    if (argc >= 2) target_score = static_cast<int>(strtol(argv[1], nullptr, 10));
     printf("目标分数: %d\n", target_score);
     printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
 
@@ -500,7 +507,7 @@ int main(int argc, char *argv[]) {
         cudaStreamCreate(&stream[i]);
     }
 
-    uint64_t base_seed = (uint64_t)time(nullptr);
+    auto base_seed = static_cast<uint64_t>(time(nullptr));
 
     bool found = false;
     int best_score = 0;
@@ -541,8 +548,8 @@ int main(int argc, char *argv[]) {
                         cudaMemcpyDeviceToHost, stream[cur]);
     }
 
-    for (int i = 0; i < 2; i++)
-        cudaStreamSynchronize(stream[i]);
+    for (auto & i : stream)
+        cudaStreamSynchronize(i);
 
     int first_unprocessed = (SEARCH_BATCHES >= 2) ? (SEARCH_BATCHES - 2) : 0;
     for (int batch = first_unprocessed; batch < SEARCH_BATCHES && !found; batch++)
@@ -560,7 +567,7 @@ int main(int argc, char *argv[]) {
 
     // Host 端回放生成完整 history
     uint64_t batch_seed = base_seed + best_batch * NUM_THREADS;
-    uint32_t rng_seed = (uint32_t)(batch_seed + best_tid * 2654435761ULL);
+    auto rng_seed = static_cast<uint32_t>(batch_seed + best_tid * 2654435761ULL);
     HostSimResult best = replay_game(rng_seed, best_tid % 4, target_score);
 
     printf("\n========== 生成结果 ==========\n");
@@ -577,9 +584,8 @@ int main(int argc, char *argv[]) {
         printf("\n");
     }
 
-    string json = generate_submit_data(best, false);
-    FILE *fout = fopen("submit_output.json", "w");
-    if (fout) {
+    const string json = generate_submit_data(best, false);
+    if (FILE *fout = fopen("submit_output.json", "w")) {
         fprintf(fout, "%s\n", json.c_str());
         fclose(fout);
         printf("\n完整 JSON 已写入 submit_output.json (%zu 字节)\n", json.size());
