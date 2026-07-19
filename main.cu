@@ -12,7 +12,7 @@ constexpr int MAX_STEPS = 2048;
 constexpr int THREADS_PER_BLOCK = 256;
 constexpr int NUM_BLOCKS = 1024;
 constexpr int NUM_THREADS = THREADS_PER_BLOCK * NUM_BLOCKS; // 65536
-constexpr int SEARCH_BATCHES = 64;
+constexpr int SEARCH_BATCHES = 256;
 
 using std::string;
 
@@ -217,25 +217,69 @@ __host__ __device__ void add_random_tile(int *grid, uint32_t *rng, bool is_start
     }
 }
 
-// ─── 简单启发式评估 ────────────────────────────────────────────────────
-__host__ __device__ float evaluate(const int *grid) {
-    int empty_cnt = count_empty(grid);
-    float score = (float)(empty_cnt) * 16.0f;
+// ─── log2 快速计算 ────────────────────────────────────────────────────
+__host__ __device__ int ilog2(int v) {
+    int log = 0;
+    while (v > 1) { v >>= 1; log++; }
+    return log;
+}
 
-    int corners[4] = {grid[0], grid[3], grid[12], grid[15]};
-    for (int & corner : corners) {
-        if (corner > 0) score += (float)corner * 0.005f;
+// ─── 改进的启发式评估 ────────────────────────────────────────────────────
+__host__ __device__ float evaluate(const int *grid) {
+    float score = 0.0f;
+    int empty_cnt = count_empty(grid);
+
+    // 1. 空格子 - 高权重，保障灵活性
+    score += (float)empty_cnt * 30.0f;
+
+    // 2. 位置权重矩阵 - 梯度指向左上角
+    //    鼓励大值方块靠左上，向左/上移动总是提升分数
+    float pos_w[16] = {
+        30.0f, 26.0f, 22.0f, 18.0f,
+        26.0f, 22.0f, 18.0f, 14.0f,
+        22.0f, 18.0f, 14.0f, 10.0f,
+        18.0f, 14.0f, 10.0f,  6.0f
+    };
+
+    for (int i = 0; i < 16; i++) {
+        if (grid[i] > 0) {
+            score += (float)ilog2(grid[i]) * pos_w[i] * 0.4f;
+        }
     }
 
+    // 3. 合并潜力 - 相邻等值方块加分（鼓励设置合并机会）
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 3; c++) {
             int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
-            if (a > 0 && b > 0) {
-                if (a >= b) score += 1.0f;
-                else score -= 2.0f;
+            if (a > 0 && a == b) {
+                score += (float)ilog2(a) * 3.0f;
             }
         }
     }
+    for (int c = 0; c < 4; c++) {
+        for (int r = 0; r < 3; r++) {
+            int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
+            if (a > 0 && a == b) {
+                score += (float)ilog2(a) * 3.0f;
+            }
+        }
+    }
+
+    // 4. 倍率方块（-1/-2）- 鼓励贴近大值正数方块
+    for (int i = 0; i < 16; i++) {
+        if (grid[i] >= -2 && grid[i] <= -1) {
+            int r = i / 4, c = i % 4;
+            int max_nbr = 0;
+            if (r > 0 && grid[i - 4] > 0) max_nbr = max(max_nbr, grid[i - 4]);
+            if (r < 3 && grid[i + 4] > 0) max_nbr = max(max_nbr, grid[i + 4]);
+            if (c > 0 && grid[i - 1] > 0) max_nbr = max(max_nbr, grid[i - 1]);
+            if (c < 3 && grid[i + 1] > 0) max_nbr = max(max_nbr, grid[i + 1]);
+            if (max_nbr > 0) {
+                score += (float)ilog2(max_nbr) * 2.0f;
+            }
+        }
+    }
+
     return score;
 }
 
@@ -425,7 +469,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int target_score = 100000;
+    int target_score = 300000;
     if (argc >= 2) target_score = atoi(argv[1]);
     printf("目标分数: %d\n", target_score);
     printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
