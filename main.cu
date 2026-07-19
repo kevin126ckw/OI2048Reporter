@@ -224,59 +224,58 @@ __host__ __device__ int ilog2(int v) {
     return log;
 }
 
-// ─── 改进的启发式评估 ────────────────────────────────────────────────────
-__host__ __device__ float evaluate(const int *grid) {
+// ─── OI-2048 得分驱动评估（strategy: 0=左上 1=右上 2=左下 3=右下）─────
+__host__ __device__ float evaluate(const int *grid, int strategy = 0) {
     float score = 0.0f;
     int empty_cnt = count_empty(grid);
 
-    // 1. 空格子 - 高权重，保障灵活性
-    score += (float)empty_cnt * 30.0f;
+    score += (float)empty_cnt * 24.0f;
 
-    // 2. 位置权重矩阵 - 梯度指向左上角
-    //    鼓励大值方块靠左上，向左/上移动总是提升分数
-    float pos_w[16] = {
-        30.0f, 26.0f, 22.0f, 18.0f,
-        26.0f, 22.0f, 18.0f, 14.0f,
-        22.0f, 18.0f, 14.0f, 10.0f,
-        18.0f, 14.0f, 10.0f,  6.0f
-    };
+    // 目标角落坐标
+    int cr = (strategy >= 2) ? 3 : 0;
+    int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
 
-    for (int i = 0; i < 16; i++) {
-        if (grid[i] > 0) {
-            score += (float)ilog2(grid[i]) * pos_w[i] * 0.4f;
+    // 位置奖励：大值方块靠近目标角落
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            int v = grid[r * 4 + c];
+            if (v > 0) {
+                int dist = abs(r - cr) + abs(c - cc);
+                float pos_w = 30.0f - (float)dist * 4.0f;
+                score += (float)ilog2(v) * pos_w * 0.25f;
+            }
         }
     }
 
-    // 3. 合并潜力 - 相邻等值方块加分（鼓励设置合并机会）
+    // 倍率合并潜力（OI-2048 核心得分来源）
+    // 奖励 = log2(|倍率| × 正数值)，-2 比 -1 获得更高权重
+    for (int i = 0; i < 16; i++) {
+        if (grid[i] >= -2 && grid[i] <= -1) {
+            int r = i / 4, c = i % 4;
+            int best_nbr = 0;
+            if (r > 0 && grid[i - 4] > 0) best_nbr = max(best_nbr, grid[i - 4]);
+            if (r < 3 && grid[i + 4] > 0) best_nbr = max(best_nbr, grid[i + 4]);
+            if (c > 0 && grid[i - 1] > 0) best_nbr = max(best_nbr, grid[i - 1]);
+            if (c < 3 && grid[i + 1] > 0) best_nbr = max(best_nbr, grid[i + 1]);
+            if (best_nbr > 0) {
+                int mult = -grid[i];            // 1 或 2
+                int potential = mult * best_nbr; // 预计得分 =  |倍率| × 正数
+                score += (float)ilog2(potential) * 6.0f;
+            }
+        }
+    }
+
+    // 普通合并潜力
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 3; c++) {
             int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
-            if (a > 0 && a == b) {
-                score += (float)ilog2(a) * 3.0f;
-            }
+            if (a > 0 && a == b) score += (float)ilog2(a) * 2.0f;
         }
     }
     for (int c = 0; c < 4; c++) {
         for (int r = 0; r < 3; r++) {
             int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
-            if (a > 0 && a == b) {
-                score += (float)ilog2(a) * 3.0f;
-            }
-        }
-    }
-
-    // 4. 倍率方块（-1/-2）- 鼓励贴近大值正数方块
-    for (int i = 0; i < 16; i++) {
-        if (grid[i] >= -2 && grid[i] <= -1) {
-            int r = i / 4, c = i % 4;
-            int max_nbr = 0;
-            if (r > 0 && grid[i - 4] > 0) max_nbr = max(max_nbr, grid[i - 4]);
-            if (r < 3 && grid[i + 4] > 0) max_nbr = max(max_nbr, grid[i + 4]);
-            if (c > 0 && grid[i - 1] > 0) max_nbr = max(max_nbr, grid[i - 1]);
-            if (c < 3 && grid[i + 1] > 0) max_nbr = max(max_nbr, grid[i + 1]);
-            if (max_nbr > 0) {
-                score += (float)ilog2(max_nbr) * 2.0f;
-            }
+            if (a > 0 && a == b) score += (float)ilog2(a) * 2.0f;
         }
     }
 
@@ -294,6 +293,8 @@ __global__ void simulate_games(uint64_t base_seed, int target_score,
                                SimResult *results) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= NUM_THREADS) return;
+
+    int strategy = tid % 4; // 0=左上 1=右上 2=左下 3=右下
 
     uint32_t rng = (uint32_t)(base_seed + tid * 2654435761ULL);
     int grid[16] = {0};
@@ -314,7 +315,7 @@ __global__ void simulate_games(uint64_t base_seed, int target_score,
             bool moved;
             apply_move(temp, dir, &moved);
             if (!moved) continue;
-            float e = evaluate(temp);
+            float e = evaluate(temp, strategy);
             if (e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
@@ -348,7 +349,7 @@ struct HostSimResult {
     int final_grid[16];
 };
 
-HostSimResult replay_game(uint32_t rng_seed, int target_score = -1) {
+HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1) {
     HostSimResult res;
     res.score = 0;
     res.steps = 0;
@@ -375,7 +376,7 @@ HostSimResult replay_game(uint32_t rng_seed, int target_score = -1) {
             bool moved;
             apply_move(temp, dir, &moved);
             if (!moved) continue;
-            float e = evaluate(temp);
+            float e = evaluate(temp, strategy);
             if (e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
@@ -547,7 +548,7 @@ int main(int argc, char *argv[]) {
     // Host 端回放生成完整 history
     uint64_t batch_seed = base_seed + best_batch * NUM_THREADS;
     uint32_t rng_seed = (uint32_t)(batch_seed + best_tid * 2654435761ULL);
-    HostSimResult best = replay_game(rng_seed, target_score);
+    HostSimResult best = replay_game(rng_seed, best_tid % 4, target_score);
 
     printf("\n========== 生成结果 ==========\n");
     printf("分数: %d\n", best.score);
