@@ -234,100 +234,91 @@ __host__ __device__ static inline int ilog2(int v) {
 #endif
 }
 
-// ─── OI-2048 得分驱动评估（pos_w 由调用方预计算）──────────────────────────
+// ─── OI-2048 得分驱动评估（单趟遍历 + log_grid 预计算消除重复 __clz）─────
 __host__ __device__ static float evaluate(const int *grid, const float *pos_w, int cr, int cc) {
+    // 预计算全部 16 格 log2，后续行/列相邻分析直接读取，消除 ~24 次重复 __clz
+    int log_grid[16];
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+        int v = grid[i];
+        log_grid[i] = (v != 0) ? ((v > 0) ? ilog2(v) : ilog2(-v)) : 0;
+    }
+
     float score = 0.0f;
     int empty_cnt = 0;
     int max_val = 0;
-
-    // 位置权重 + 空格计数
-#pragma unroll
-    for (int i = 0; i < 16; i++) {
-        int v = grid[i];
-        if (v == 0) { empty_cnt++; continue; }
-        if (v > 0) {
-            score += static_cast<float>(ilog2(v)) * pos_w[i];
-            if (v > max_val) max_val = v;
-        }
-    }
-
-    // 自适应空格奖励：后期空格更珍贵
-    float empty_bonus = 24.0f;
-    if (max_val > 0) empty_bonus += static_cast<float>(ilog2(max_val)) * 3.0f;
-    score += static_cast<float>(empty_cnt) * empty_bonus;
-
-    // 单调性 + 平滑度（合并为一次遍历）
+    int max_log = 0;
     int row_sign = (cc == 3) ? -1 : 1;
     int col_sign = (cr == 3) ? -1 : 1;
+
+    // 单趟遍历 16 格同时完成全部评估维度
 #pragma unroll
     for (int r = 0; r < 4; r++) {
 #pragma unroll
-        for (int c = 0; c < 3; c++) {
-            int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
-            if (a > 0 && b > 0) {
-                int la = ilog2(a), lb = ilog2(b);
-                score -= static_cast<float>(la > lb ? la - lb : lb - la) * 0.8f;
-                score += (a >= b ? 1 : -1) * row_sign * static_cast<float>(la) * 0.5f;
+        for (int c = 0; c < 4; c++) {
+            int idx = r * 4 + c;
+            int v = grid[idx];
+            int log_v = log_grid[idx];
+            bool v_pos = false;
+
+            // ── 单格分析 ──
+            if (v == 0) {
+                empty_cnt++;
+            } else {
+                v_pos = (v > 0);
+                if (v_pos) {
+                    score += static_cast<float>(log_v) * pos_w[idx];
+                    if (v > max_val) { max_val = v; max_log = log_v; }
+                } else {
+                    // 倍率合并潜力：检查四邻域
+                    int best_nbr = 0;
+                    if (r > 0 && grid[idx - 4] > 0) best_nbr = max(best_nbr, grid[idx - 4]);
+                    if (r < 3 && grid[idx + 4] > 0) best_nbr = max(best_nbr, grid[idx + 4]);
+                    if (c > 0 && grid[idx - 1] > 0) best_nbr = max(best_nbr, grid[idx - 1]);
+                    if (c < 3 && grid[idx + 1] > 0) best_nbr = max(best_nbr, grid[idx + 1]);
+                    if (best_nbr > 0) {
+                        if (v <= -8 && (-v) * best_nbr > 65536) { /* skip */ }
+                        else {
+                            float w = (v <= -8) ? 8.0f : 6.0f;
+                            // |v| 和 best_nbr 都是 2 的幂: log2(|v|*nbr) = log2(|v|) + log2(nbr)
+                            score += static_cast<float>(log_v + ilog2(best_nbr)) * w;
+                        }
+                    }
+                }
             }
-        }
-    }
-#pragma unroll
-    for (int c = 0; c < 4; c++) {
-#pragma unroll
-        for (int r = 0; r < 3; r++) {
-            int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
-            if (a > 0 && b > 0) {
-                int la = ilog2(a), lb = ilog2(b);
-                score -= static_cast<float>(la > lb ? la - lb : lb - la) * 0.8f;
-                score += (a >= b ? 1 : -1) * col_sign * static_cast<float>(la) * 0.5f;
+
+            // ── 行相邻对（当前格 vs 右侧），lb 直接取自 log_grid ──
+            if (c < 3) {
+                int b = grid[idx + 1];
+                if (v_pos && b > 0) {
+                    int lb = log_grid[idx + 1];
+                    int diff = log_v - lb;
+                    if (diff < 0) diff = -diff;
+                    score -= static_cast<float>(diff) * 0.8f;
+                    score += (v >= b ? 1 : -1) * row_sign * static_cast<float>(log_v) * 0.5f;
+                    if (v == b) score += static_cast<float>(log_v) * 2.0f;
+                }
+            }
+
+            // ── 列相邻对（当前格 vs 下方），lb 直接取自 log_grid ──
+            if (r < 3) {
+                int b = grid[idx + 4];
+                if (v_pos && b > 0) {
+                    int lb = log_grid[idx + 4];
+                    int diff = log_v - lb;
+                    if (diff < 0) diff = -diff;
+                    score -= static_cast<float>(diff) * 0.8f;
+                    score += (v >= b ? 1 : -1) * col_sign * static_cast<float>(log_v) * 0.5f;
+                    if (v == b) score += static_cast<float>(log_v) * 2.0f;
+                }
             }
         }
     }
 
-    // 倍率合并潜力
-#pragma unroll
-    for (int i = 0; i < 16; i++) {
-        int v = grid[i];
-        if (v >= -2 && v <= -1) {
-            int r = i >> 2, c = i & 3;
-            int best_nbr = 0;
-            if (r > 0 && grid[i - 4] > 0) best_nbr = max(best_nbr, grid[i - 4]);
-            if (r < 3 && grid[i + 4] > 0) best_nbr = max(best_nbr, grid[i + 4]);
-            if (c > 0 && grid[i - 1] > 0) best_nbr = max(best_nbr, grid[i - 1]);
-            if (c < 3 && grid[i + 1] > 0) best_nbr = max(best_nbr, grid[i + 1]);
-            if (best_nbr > 0) {
-                score += static_cast<float>(ilog2((-v) * best_nbr)) * 6.0f;
-            }
-        } else if (v <= -8) {
-            int r = i >> 2, c = i & 3;
-            int best_nbr = 0;
-            if (r > 0 && grid[i - 4] > 0) best_nbr = max(best_nbr, grid[i - 4]);
-            if (r < 3 && grid[i + 4] > 0) best_nbr = max(best_nbr, grid[i + 4]);
-            if (c > 0 && grid[i - 1] > 0) best_nbr = max(best_nbr, grid[i - 1]);
-            if (c < 3 && grid[i + 1] > 0) best_nbr = max(best_nbr, grid[i + 1]);
-            if (best_nbr > 0 && (-v) * best_nbr <= 65536) {
-                score += static_cast<float>(ilog2((-v) * best_nbr)) * 8.0f;
-            }
-        }
-    }
-
-    // 普通合并潜力
-#pragma unroll
-    for (int r = 0; r < 4; r++) {
-#pragma unroll
-        for (int c = 0; c < 3; c++) {
-            int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
-            if (a > 0 && a == b) score += static_cast<float>(ilog2(a)) * 2.0f;
-        }
-    }
-#pragma unroll
-    for (int c = 0; c < 4; c++) {
-#pragma unroll
-        for (int r = 0; r < 3; r++) {
-            int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
-            if (a > 0 && a == b) score += static_cast<float>(ilog2(a)) * 2.0f;
-        }
-    }
+    // 自适应空格奖励（max_log 已在遍历中记录，避免额外 ilog2）
+    float empty_bonus = 24.0f;
+    if (max_val > 0) empty_bonus += static_cast<float>(max_log) * 3.0f;
+    score += static_cast<float>(empty_cnt) * empty_bonus;
 
     return score;
 }
@@ -335,9 +326,7 @@ __host__ __device__ static float evaluate(const int *grid, const float *pos_w, i
 namespace {
     // ─── GPU 内核：并行模拟 ────────────────────────────────────────────────
     struct SimResult {
-        int score;
-        int steps;
-        int final_grid[16];
+        int score;  // 仅传分数，final_grid/steps 由 Host 回放生成
     };
 }
 
@@ -350,11 +339,12 @@ __global__ __launch_bounds__(256, 4) static void simulate_games(uint64_t base_se
     int cr = (strategy >= 2) ? 3 : 0;
     int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
     float pos_w[16];
+    // powf(0.62f, dist) * 12.0f 预计算, dist = 0..6
+    const float dist_w[7] = {12.0f, 7.44f, 4.6128f, 2.859936f, 1.77316032f, 1.09935936f, 0.68160288f};
 #pragma unroll
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        int dist = abs(r - cr) + abs(c - cc);
-        pos_w[i] = powf(0.62f, static_cast<float>(dist)) * 12.0f;
+        pos_w[i] = dist_w[abs(r - cr) + abs(c - cc)];
     }
 
     auto rng = static_cast<uint32_t>(base_seed + tid * 2654435761ULL);
@@ -400,8 +390,6 @@ __global__ __launch_bounds__(256, 4) static void simulate_games(uint64_t base_se
     }
 
     results[tid].score = score;
-    results[tid].steps = steps;
-    copy_grid(grid, results[tid].final_grid);
 }
 
 namespace {
@@ -430,10 +418,10 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
     int cr = (strategy >= 2) ? 3 : 0;
     int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
     float pos_w[16];
+    const float dist_w[7] = {12.0f, 7.44f, 4.6128f, 2.859936f, 1.77316032f, 1.09935936f, 0.68160288f};
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        int dist = abs(r - cr) + abs(c - cc);
-        pos_w[i] = powf(0.62f, static_cast<float>(dist)) * 12.0f;
+        pos_w[i] = dist_w[abs(r - cr) + abs(c - cc)];
     }
 
     uint32_t rng = rng_seed;
@@ -551,7 +539,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int target_score = 551144;
+    int target_score = 1042766;
     if (argc >= 2) target_score = static_cast<int>(strtol(argv[1], nullptr, 10));
     printf("目标分数: %d\n", target_score);
     printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
