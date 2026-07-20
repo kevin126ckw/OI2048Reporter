@@ -330,7 +330,7 @@ namespace {
     };
 }
 
-__global__ __launch_bounds__(256, 4) static void simulate_games(uint64_t base_seed,
+__global__ __launch_bounds__(256, 2) static void simulate_games(uint64_t base_seed,
         int target_score, SimResult *results) {
     int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
     if (tid >= NUM_THREADS) return;
@@ -531,15 +531,32 @@ static string generate_submit_data(const HostSimResult &result, bool cheated = f
 }
 
 // ─── main ────────────────────────────────────────────────────────────
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            printf("CUDA 错误 %s:%d: %s (调用: %s)\n", __FILE__, __LINE__, cudaGetErrorString(err), #call); \
+            return 1; \
+        } \
+    } while(0)
+
 int main(int argc, char *argv[]) {
     int cuda_devices;
-    cudaGetDeviceCount(&cuda_devices);
-    if (cuda_devices == 0) {
-        printf("错误: 未检测到 CUDA 设备！\n");
+    cudaError_t err = cudaGetDeviceCount(&cuda_devices);
+    if (err != cudaSuccess) {
+        printf("错误: 无法检测 CUDA 设备!\n");
+        printf("CUDA 错误: %s (code %d)\n", cudaGetErrorString(err), err);
+        printf("\n可能原因:\n");
+        printf("  1. GPU 驱动未正确加载\n");
+        printf("  2. WDDM TDR 超时（GPU 在之前的计算中崩溃，驱动需要重置）\n");
+        printf("  3. CUDA 版本与 GPU 不匹配\n");
+        printf("  4. GPU 正在被其他进程占用\n");
+        printf("\n建议: 重启电脑后重试\n");
         return 1;
     }
+    printf("检测到 %d 个 CUDA 设备\n", cuda_devices);
 
-    int target_score = 1042766;
+    int target_score = 50000;
     if (argc >= 2) target_score = static_cast<int>(strtol(argv[1], nullptr, 10));
     printf("目标分数: %d\n", target_score);
     printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
@@ -549,12 +566,13 @@ int main(int argc, char *argv[]) {
     cudaStream_t stream[2];
 
     for (int i = 0; i < 2; i++) {
-        cudaMalloc(&d_results[i], NUM_THREADS * sizeof(SimResult));
-        cudaMemset(d_results[i], 0, NUM_THREADS * sizeof(SimResult));
-        cudaHostAlloc(&h_results[i], NUM_THREADS * sizeof(SimResult),
-                      cudaHostAllocDefault);
-        cudaStreamCreate(&stream[i]);
+        CUDA_CHECK(cudaMalloc(&d_results[i], NUM_THREADS * sizeof(SimResult)));
+        CUDA_CHECK(cudaMemset(d_results[i], 0, NUM_THREADS * sizeof(SimResult)));
+        CUDA_CHECK(cudaHostAlloc(&h_results[i], NUM_THREADS * sizeof(SimResult),
+                      cudaHostAllocDefault));
+        CUDA_CHECK(cudaStreamCreate(&stream[i]));
     }
+    printf("GPU 内存分配完成\n");
 
     auto base_seed = static_cast<uint64_t>(time(nullptr));
 
@@ -587,37 +605,63 @@ int main(int argc, char *argv[]) {
 
         if (batch >= 2) {
             cudaStreamSynchronize(stream[cur]);
+            cudaError_t sync_err = cudaGetLastError();
+            if (sync_err != cudaSuccess) {
+                printf("CUDA 内核错误 批次%d: %s\n", batch - 2, cudaGetErrorString(sync_err));
+                // 继续处理已有结果
+            }
             process_batch(cur, batch - 2);
+        }
+
+        if (batch % 100 == 0) {
+            printf("启动批次 %d/%d...\n", batch, SEARCH_BATCHES);
         }
 
         simulate_games<<<NUM_BLOCKS, THREADS_PER_BLOCK, 0, stream[cur]>>>(
             base_seed + batch * NUM_THREADS, target_score, d_results[cur]);
-        cudaMemcpyAsync(h_results[cur], d_results[cur],
+        
+        cudaError_t launch_err = cudaGetLastError();
+        if (launch_err != cudaSuccess) {
+            printf("内核启动失败 批次%d: %s\n", batch, cudaGetErrorString(launch_err));
+            break;
+        }
+        
+        CUDA_CHECK(cudaMemcpyAsync(h_results[cur], d_results[cur],
                         NUM_THREADS * sizeof(SimResult),
-                        cudaMemcpyDeviceToHost, stream[cur]);
+                        cudaMemcpyDeviceToHost, stream[cur]));
     }
 
-    for (auto & i : stream)
-        cudaStreamSynchronize(i);
+    printf("同步所有流...\n");
+    for (int i = 0; i < 2; i++) {
+        CUDA_CHECK(cudaStreamSynchronize(stream[i]));
+    }
 
     int first_unprocessed = (SEARCH_BATCHES >= 2) ? (SEARCH_BATCHES - 2) : 0;
     for (int batch = first_unprocessed; batch < SEARCH_BATCHES && !found; batch++)
         process_batch(batch % 2, batch);
 
+    printf("释放 GPU 内存...\n");
     for (int i = 0; i < 2; i++) {
-        cudaFree(d_results[i]);
-        cudaFreeHost(h_results[i]);
-        cudaStreamDestroy(stream[i]);
+        CUDA_CHECK(cudaFree(d_results[i]));
+        CUDA_CHECK(cudaFreeHost(h_results[i]));
+        CUDA_CHECK(cudaStreamDestroy(stream[i]));
     }
+    printf("GPU 内存释放完成\n");
 
     if (!found) {
-        printf("未达到目标分数，最终最佳: %d 分，将使用此结果。\n", best_score);
+        printf("未达到目标分数，最终最佳: %d 分 (线程%d, 批次%d)，将使用此结果。\n", best_score, best_tid, best_batch);
     }
 
     // Host 端回放生成完整 history
+    if (best_tid < 0 || best_batch < 0) {
+        printf("错误: 没有找到任何有效结果 (best_tid=%d, best_batch=%d)\n", best_tid, best_batch);
+        return 1;
+    }
     uint64_t batch_seed = base_seed + best_batch * NUM_THREADS;
     auto rng_seed = static_cast<uint32_t>(batch_seed + best_tid * 2654435761ULL);
+    printf("开始回放...\n");
     HostSimResult best = replay_game(rng_seed, best_tid % 4, target_score);
+    printf("回放完成\n");
 
     printf("\n========== 生成结果 ==========\n");
     printf("分数: %d\n", best.score);
