@@ -248,7 +248,7 @@ enum : int {
     EVAL_DEAD_PENALTY = 30720,  // 30.0
 };
 // dist_w 定点数: {12.0, 7.44, 4.6128, 2.859936, 1.77316032, 1.09935936, 0.68160288} * 1024
-__host__ __device__ static const int dist_w_int[7] = {12288, 7619, 4724, 2929, 1816, 1126, 698};
+__host__ __device__ static constexpr int dist_w_int[7] = {12288, 7619, 4724, 2929, 1816, 1126, 698};
 
 // ─── OI-2048 纯整数评估（GPU/CPU 结果完全一致）────────────────────────
 __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int cr, int cc, int = 0) {
