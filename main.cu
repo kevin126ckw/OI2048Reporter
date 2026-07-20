@@ -8,6 +8,7 @@
 #include <vector>
 #include <random>
 
+constexpr int GRID_SIZE = 4;
 constexpr int MAX_STEPS = 2048;
 constexpr int THREADS_PER_BLOCK = 256;
 constexpr int NUM_BLOCKS = 1024;
@@ -247,8 +248,7 @@ enum : int {
     EVAL_DEAD_PENALTY = 30720,  // 30.0
 };
 // dist_w 定点数: {12.0, 7.44, 4.6128, 2.859936, 1.77316032, 1.09935936, 0.68160288} * 1024
-static const int dist_w_int_host[7] = {12288, 7619, 4724, 2929, 1816, 1126, 698};
-__device__ static const int dist_w_int_dev[7] = {12288, 7619, 4724, 2929, 1816, 1126, 698};
+__host__ __device__ static const int dist_w_int[7] = {12288, 7619, 4724, 2929, 1816, 1126, 698};
 
 // ─── OI-2048 纯整数评估（GPU/CPU 结果完全一致）────────────────────────
 __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int cr, int cc, int = 0) {
@@ -408,7 +408,7 @@ __global__ __launch_bounds__(256, 2) static void simulate_games(uint64_t base_se
 #pragma unroll
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        pos_w[i] = dist_w_int_dev[abs(r - cr) + abs(c - cc)];
+        pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     auto rng = static_cast<uint32_t>(base_seed + tid * 2654435761ULL);
@@ -484,7 +484,7 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
     int pos_w[16];
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        pos_w[i] = dist_w_int_host[abs(r - cr) + abs(c - cc)];
+        pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     uint32_t rng = rng_seed;
@@ -605,7 +605,7 @@ static HostSimResult replay_game_expectimax(uint32_t rng_seed, int strategy, int
     int pos_w[16];
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        pos_w[i] = dist_w_int_host[abs(r - cr) + abs(c - cc)];
+        pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     uint32_t rng = rng_seed;
