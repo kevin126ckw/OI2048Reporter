@@ -234,9 +234,24 @@ __host__ __device__ static inline int ilog2(int v) {
 #endif
 }
 
-// ─── OI-2048 得分驱动评估（单趟遍历 + log_grid 预计算消除重复 __clz）─────
-__host__ __device__ static float evaluate(const int *grid, const float *pos_w, int cr, int cc) {
-    // 预计算全部 16 格 log2，后续行/列相邻分析直接读取，消除 ~24 次重复 __clz
+// ─── 整数评估常量（×1024 定点数，确保 GPU/CPU 结果完全一致）─────────────
+enum : int {
+    EVAL_NEG_W8      = 10240,  // 10.0
+    EVAL_NEG_W_OTHER  = 6144,   // 6.0
+    EVAL_SMOOTH       = 819,    // 0.8
+    EVAL_MONO         = 512,    // 0.5
+    EVAL_MERGE        = 2048,   // 2.0
+    EVAL_MONO_EXTRA   = 82,     // 0.08
+    EVAL_EMPTY_BASE   = 24576,  // 24.0
+    EVAL_EMPTY_COEF   = 358,    // 0.35
+    EVAL_CORNER_MUL   = 2048,   // 2.0
+    EVAL_DEAD_PENALTY = 30720,  // 30.0
+};
+// dist_w 定点数: {12.0, 7.44, 4.6128, 2.859936, 1.77316032, 1.09935936, 0.68160288} * 1024
+__host__ __device__ static const int dist_w_int[7] = {12288, 7619, 4724, 2929, 1816, 1126, 698};
+
+// ─── OI-2048 纯整数评估（GPU/CPU 结果完全一致）────────────────────────
+__host__ __device__ static int evaluate(const int *grid, const int *pos_w, int cr, int cc, int = 0) {
     int log_grid[16];
 #pragma unroll
     for (int i = 0; i < 16; i++) {
@@ -244,14 +259,15 @@ __host__ __device__ static float evaluate(const int *grid, const float *pos_w, i
         log_grid[i] = (v != 0) ? ((v > 0) ? ilog2(v) : ilog2(-v)) : 0;
     }
 
-    float score = 0.0f;
+    int score = 0;
     int empty_cnt = 0;
     int max_val = 0;
     int max_log = 0;
+    int max_pos_r = -1;
+    int max_pos_c = -1;
     int row_sign = (cc == 3) ? -1 : 1;
     int col_sign = (cr == 3) ? -1 : 1;
 
-    // 单趟遍历 16 格同时完成全部评估维度
 #pragma unroll
     for (int r = 0; r < 4; r++) {
 #pragma unroll
@@ -261,64 +277,114 @@ __host__ __device__ static float evaluate(const int *grid, const float *pos_w, i
             int log_v = log_grid[idx];
             bool v_pos = false;
 
-            // ── 单格分析 ──
             if (v == 0) {
                 empty_cnt++;
             } else {
                 v_pos = (v > 0);
                 if (v_pos) {
-                    score += static_cast<float>(log_v) * pos_w[idx];
-                    if (v > max_val) { max_val = v; max_log = log_v; }
+                    score += log_v * pos_w[idx];
+                    if (v > max_val) { max_val = v; max_log = log_v; max_pos_r = r; max_pos_c = c; }
                 } else {
-                    // 倍率合并潜力：检查四邻域
                     int best_nbr = 0;
                     if (r > 0 && grid[idx - 4] > 0) best_nbr = max(best_nbr, grid[idx - 4]);
                     if (r < 3 && grid[idx + 4] > 0) best_nbr = max(best_nbr, grid[idx + 4]);
                     if (c > 0 && grid[idx - 1] > 0) best_nbr = max(best_nbr, grid[idx - 1]);
                     if (c < 3 && grid[idx + 1] > 0) best_nbr = max(best_nbr, grid[idx + 1]);
+                    if (v <= -8) {
+                        for (int c2 = 0; c2 < 4; c2++) {
+                            int nbr = grid[r * 4 + c2];
+                            if (nbr > 0 && nbr > best_nbr) best_nbr = nbr;
+                        }
+                        for (int r2 = 0; r2 < 4; r2++) {
+                            int nbr = grid[r2 * 4 + c];
+                            if (nbr > 0 && nbr > best_nbr) best_nbr = nbr;
+                        }
+                    }
                     if (best_nbr > 0) {
                         if (v <= -8 && (-v) * best_nbr > 65536) { /* skip */ }
                         else {
-                            float w = (v <= -8) ? 8.0f : 6.0f;
-                            // |v| 和 best_nbr 都是 2 的幂: log2(|v|*nbr) = log2(|v|) + log2(nbr)
-                            score += static_cast<float>(log_v + ilog2(best_nbr)) * w;
+                            int w = (v <= -8) ? EVAL_NEG_W8 : EVAL_NEG_W_OTHER;
+                            score += (log_v + ilog2(best_nbr)) * w;
                         }
                     }
                 }
             }
 
-            // ── 行相邻对（当前格 vs 右侧），lb 直接取自 log_grid ──
             if (c < 3) {
                 int b = grid[idx + 1];
                 if (v_pos && b > 0) {
                     int lb = log_grid[idx + 1];
                     int diff = log_v - lb;
                     if (diff < 0) diff = -diff;
-                    score -= static_cast<float>(diff) * 0.8f;
-                    score += (v >= b ? 1 : -1) * row_sign * static_cast<float>(log_v) * 0.5f;
-                    if (v == b) score += static_cast<float>(log_v) * 2.0f;
+                    score -= diff * EVAL_SMOOTH;
+                    score += (v >= b ? 1 : -1) * row_sign * log_v * EVAL_MONO;
+                    if (v == b) score += log_v * EVAL_MERGE;
                 }
             }
 
-            // ── 列相邻对（当前格 vs 下方），lb 直接取自 log_grid ──
             if (r < 3) {
                 int b = grid[idx + 4];
                 if (v_pos && b > 0) {
                     int lb = log_grid[idx + 4];
                     int diff = log_v - lb;
                     if (diff < 0) diff = -diff;
-                    score -= static_cast<float>(diff) * 0.8f;
-                    score += (v >= b ? 1 : -1) * col_sign * static_cast<float>(log_v) * 0.5f;
-                    if (v == b) score += static_cast<float>(log_v) * 2.0f;
+                    score -= diff * EVAL_SMOOTH;
+                    score += (v >= b ? 1 : -1) * col_sign * log_v * EVAL_MONO;
+                    if (v == b) score += log_v * EVAL_MERGE;
                 }
             }
         }
     }
 
-    // 自适应空格奖励（max_log 已在遍历中记录，避免额外 ilog2）
-    float empty_bonus = 24.0f;
-    if (max_val > 0) empty_bonus += static_cast<float>(max_log) * 3.0f;
-    score += static_cast<float>(empty_cnt) * empty_bonus;
+    int mono_extra = (max_log - 8) * EVAL_MONO_EXTRA;
+    if (mono_extra > 0) {
+        for (int r = 0; r < 4; r++) {
+            for (int c = 0; c < 3; c++) {
+                int idx = r * 4 + c;
+                int a = grid[idx], b = grid[idx + 1];
+                if (a > 0 && b > 0)
+                    score += (a >= b ? 1 : -1) * row_sign * log_grid[idx] * mono_extra;
+            }
+        }
+        for (int c = 0; c < 4; c++) {
+            for (int r = 0; r < 3; r++) {
+                int idx = r * 4 + c;
+                int a = grid[idx], b = grid[idx + 4];
+                if (a > 0 && b > 0)
+                    score += (a >= b ? 1 : -1) * col_sign * log_grid[idx] * mono_extra;
+            }
+        }
+    }
+
+    int empty_bonus = EVAL_EMPTY_BASE;
+    if (max_val > 0) empty_bonus += max_log * max_log * EVAL_EMPTY_COEF;
+    score += empty_cnt * empty_bonus;
+
+    if (max_pos_r >= 0 && (max_pos_r != cr || max_pos_c != cc)) {
+        int dist = abs(max_pos_r - cr) + abs(max_pos_c - cc);
+        score -= max_log * dist * EVAL_CORNER_MUL;
+    }
+
+    if (empty_cnt <= 3 && max_log >= 10) {
+        bool has_merge = false;
+        for (int i = 0; i < 16 && !has_merge; i++)
+            if (grid[i] <= -8) has_merge = true;
+        for (int r = 0; r < 4 && !has_merge; r++)
+            for (int c = 0; c < 3 && !has_merge; c++) {
+                int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
+                if (a > 0 && a == b) has_merge = true;
+                if (a > 0 && b < 0 && (-b) * a <= 65536) has_merge = true;
+                if (a < 0 && b > 0 && (-a) * b <= 65536) has_merge = true;
+            }
+        for (int c = 0; c < 4 && !has_merge; c++)
+            for (int r = 0; r < 3 && !has_merge; r++) {
+                int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
+                if (a > 0 && a == b) has_merge = true;
+                if (a > 0 && b < 0 && (-b) * a <= 65536) has_merge = true;
+                if (a < 0 && b > 0 && (-a) * b <= 65536) has_merge = true;
+            }
+        if (!has_merge) score -= max_log * EVAL_DEAD_PENALTY;
+    }
 
     return score;
 }
@@ -338,13 +404,11 @@ __global__ __launch_bounds__(256, 4) static void simulate_games(uint64_t base_se
     int strategy = tid & 3;
     int cr = (strategy >= 2) ? 3 : 0;
     int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
-    float pos_w[16];
-    // powf(0.62f, dist) * 12.0f 预计算, dist = 0..6
-    const float dist_w[7] = {12.0f, 7.44f, 4.6128f, 2.859936f, 1.77316032f, 1.09935936f, 0.68160288f};
+    int pos_w[16];
 #pragma unroll
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        pos_w[i] = dist_w[abs(r - cr) + abs(c - cc)];
+        pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     auto rng = static_cast<uint32_t>(base_seed + tid * 2654435761ULL);
@@ -357,7 +421,7 @@ __global__ __launch_bounds__(256, 4) static void simulate_games(uint64_t base_se
     int steps = 0;
 
     while (true) {
-        float best_eval = -1e9f;
+        int best_eval = -2000000000;
         int best_dir = -1;
         int best_temp[16];
         int best_move_score = 0;
@@ -369,7 +433,7 @@ __global__ __launch_bounds__(256, 4) static void simulate_games(uint64_t base_se
             bool moved;
             int move_score = apply_move(temp, dir, &moved);
             if (!moved) continue;
-            float e = evaluate(temp, pos_w, cr, cc);
+            int e = evaluate(temp, pos_w, cr, cc);
             if (e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
@@ -417,11 +481,10 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
 
     int cr = (strategy >= 2) ? 3 : 0;
     int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
-    float pos_w[16];
-    const float dist_w[7] = {12.0f, 7.44f, 4.6128f, 2.859936f, 1.77316032f, 1.09935936f, 0.68160288f};
+    int pos_w[16];
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
-        pos_w[i] = dist_w[abs(r - cr) + abs(c - cc)];
+        pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     uint32_t rng = rng_seed;
@@ -436,7 +499,7 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
     res.history.push_back(init);
 
     while (can_move(grid) && res.steps < MAX_STEPS) {
-        float best_eval = -1e9f;
+        int best_eval = -2000000000;
         int best_dir = -1;
 
         for (int dir = 0; dir < 4; dir++) {
@@ -445,7 +508,7 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
             bool moved;
             apply_move(temp, dir, &moved);
             if (!moved) continue;
-            float e = evaluate(temp, pos_w, cr, cc);
+            int e = evaluate(temp, pos_w, cr, cc);
             if (e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
@@ -464,6 +527,109 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
 
         // GPU 模拟用 target_score 找到达标的种子，
         // 但 Host 回放需要走到自然结束（游戏规则要求通关或无合法移动才能提交）
+    }
+
+    copy_grid(grid, res.final_grid);
+    return res;
+}
+
+// ─── CPU expectimax 深搜（1-ply 前向搜索，采样空格 + 加权平均）─────────
+// 限制采样数以保持速度，使用随机采样避免位置偏差
+static int choose_move_expectimax(const int *grid, int cr, int cc, const int *pos_w) {
+    int best_expected = -2000000000;
+    int best_dir = -1;
+
+    for (int dir = 0; dir < 4; dir++) {
+        int temp[16];
+        copy_grid(grid, temp);
+        bool moved;
+        apply_move(temp, dir, &moved);
+        if (!moved) continue;
+
+        // 找到移动后的空格
+        int empty[16];
+        int empty_cnt = 0;
+        for (int i = 0; i < 16; i++) if (temp[i] == 0) empty[empty_cnt++] = i;
+
+        if (empty_cnt == 0) {
+            int e = evaluate(temp, pos_w, cr, cc);
+            if (e > best_expected) { best_expected = e; best_dir = dir; }
+            continue;
+        }
+
+        // 跳跃采样（步长 ≥1，确保覆盖棋盘各区域，最多 5 个样本）
+        int step = (empty_cnt <= 5) ? 1 : (empty_cnt / 5);
+        int samples = 0;
+        int expected_sum = 0;
+
+        for (int si = 0; si < empty_cnt && samples < 5; si += step) {
+            int after_tile[16];
+            copy_grid(temp, after_tile);
+            after_tile[empty[si]] = 2; // 最常见生成 (~78%)
+
+            // 玩家最佳应对（随机方块放置后的最佳移动）
+            int best_response = -2000000000;
+            for (int d2 = 0; d2 < 4; d2++) {
+                int temp2[16];
+                copy_grid(after_tile, temp2);
+                bool moved2;
+                apply_move(temp2, d2, &moved2);
+                if (!moved2) continue;
+                int e = evaluate(temp2, pos_w, cr, cc);
+                if (e > best_response) best_response = e;
+            }
+            if (best_response < -1900000000)
+                best_response = evaluate(after_tile, pos_w, cr, cc);
+            expected_sum += best_response;
+            samples++;
+        }
+        int expected = expected_sum / samples;
+
+        if (expected > best_expected) {
+            best_expected = expected;
+            best_dir = dir;
+        }
+    }
+
+    return best_dir;
+}
+
+static HostSimResult replay_game_expectimax(uint32_t rng_seed, int strategy, int target_score = -1) {
+    HostSimResult res;
+    res.score = 0;
+    res.steps = 0;
+    res.history.clear();
+
+    int cr = (strategy >= 2) ? 3 : 0;
+    int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
+    int pos_w[16];
+    for (int i = 0; i < 16; i++) {
+        int r = i >> 2, c = i & 3;
+        pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
+    }
+
+    uint32_t rng = rng_seed;
+    int grid[16] = {0};
+
+    HistoryEntry init{};
+    for (int &i : init.before) i = 0;
+    add_random_tile(grid, &rng, true);
+    add_random_tile(grid, &rng, true);
+    copy_grid(grid, init.after);
+    res.history.push_back(init);
+
+    while (can_move(grid) && res.steps < MAX_STEPS) {
+        int best_dir = choose_move_expectimax(grid, cr, cc, pos_w);
+
+        if (best_dir < 0) break;
+
+        HistoryEntry entry{};
+        res.score += apply_move(grid, best_dir);
+        copy_grid(grid, entry.before);
+        add_random_tile(grid, &rng);
+        copy_grid(grid, entry.after);
+        res.history.push_back(entry);
+        res.steps++;
     }
 
     copy_grid(grid, res.final_grid);
@@ -563,15 +729,34 @@ int main(int argc, char *argv[]) {
     int best_tid = -1;
     int best_batch = -1;
 
+    // Top-K 种子追踪（用于 CPU 深搜）
+    constexpr int TOP_K = 24;
+    struct TopSeed { int score; int tid; int batch; };
+    TopSeed top_seeds[TOP_K] = {};
+    int top_count = 0;
+
+    auto update_top_k = [&](int score, int tid, int batch) {
+        int pos = top_count;
+        while (pos > 0 && top_seeds[pos - 1].score < score) pos--;
+        if (pos >= TOP_K) return;
+        int limit = (top_count < TOP_K) ? top_count : TOP_K - 1;
+        for (int i = limit; i > pos; i--)
+            top_seeds[i] = top_seeds[i - 1];
+        top_seeds[pos] = {score, tid, batch};
+        if (top_count < TOP_K) top_count++;
+    };
+
     auto process_batch = [&](int slot, int batch) {
         for (int i = 0; i < NUM_THREADS; i++) {
-            if (h_results[slot][i].score > best_score) {
-                best_score = h_results[slot][i].score;
+            int s = h_results[slot][i].score;
+            if (s > best_score) {
+                best_score = s;
                 best_tid = i;
                 best_batch = batch;
             }
-            if (h_results[slot][i].score >= target_score) {
-                best_score = h_results[slot][i].score;
+            if (s > 0) update_top_k(s, i, batch);
+            if (s >= target_score) {
+                best_score = s;
                 best_tid = i;
                 best_batch = batch;
                 found = true;
@@ -614,10 +799,36 @@ int main(int argc, char *argv[]) {
         printf("未达到目标分数，最终最佳: %d 分，将使用此结果。\n", best_score);
     }
 
-    // Host 端回放生成完整 history
+    // ── GPU 贪婪回放（基准，可能因浮点精度与 GPU 结果略有差异）──
     uint64_t batch_seed = base_seed + best_batch * NUM_THREADS;
     auto rng_seed = static_cast<uint32_t>(batch_seed + best_tid * 2654435761ULL);
     HostSimResult best = replay_game(rng_seed, best_tid % 4, target_score);
+    printf("GPU 分数: %d  |  CPU 贪婪回放: %d\n", best_score, best.score);
+
+    // ── CPU expectimax 深搜（Top-K 种子） ──
+    if (top_count > 0) printf("\n对 Top-%d 种子进行 CPU expectimax 深搜...\n", top_count);
+    for (int k = 0; k < top_count; k++) {
+        uint64_t bs = base_seed + static_cast<uint64_t>(top_seeds[k].batch) * NUM_THREADS;
+        auto rs = static_cast<uint32_t>(bs + top_seeds[k].tid * 2654435761ULL);
+        HostSimResult result = replay_game_expectimax(rs, top_seeds[k].tid % 4, target_score);
+        if (result.score > best.score) {
+            printf("  种子 #%d: GPU=%d → CPU expectimax=%d ⬆ 提升!\n", k, top_seeds[k].score, result.score);
+            best = result;
+        }
+    }
+
+    // ── 额外：独立 CPU expectimax 游戏（fresh seeds，不受 GPU 种子限制）──
+    {
+        uint32_t fresh_seed = static_cast<uint32_t>(time(nullptr) ^ 0xDEADBEEF);
+        for (int i = 0; i < 4; i++) {
+            int strat = i & 3;
+            HostSimResult result = replay_game_expectimax(fresh_seed + i * 999983, strat, target_score);
+            if (result.score > best.score) {
+                printf("  独立 expectimax #%d (策略%d): %d ⬆ 提升!\n", i, strat, result.score);
+                best = result;
+            }
+        }
+    }
 
     printf("\n========== 生成结果 ==========\n");
     printf("分数: %d\n", best.score);
