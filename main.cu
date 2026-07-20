@@ -4,16 +4,17 @@
 #include <ctime>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <random>
 
-constexpr int GRID_SIZE = 4;
+//constexpr int GRID_SIZE = 4;
 constexpr int MAX_STEPS = 2048;
 constexpr int THREADS_PER_BLOCK = 256;
 constexpr int NUM_BLOCKS = 1024;
 constexpr int NUM_THREADS = THREADS_PER_BLOCK * NUM_BLOCKS; // 65536
-constexpr int SEARCH_BATCHES = 1024;
+constexpr int DEFAULT_SEARCH_BATCHES = 1024;
 
 using std::string;
 
@@ -722,9 +723,65 @@ int main(int argc, char *argv[]) {
     }
     printf("检测到 %d 个 CUDA 设备\n", cuda_devices);
 
-    int target_score = 50000;
-    if (argc >= 2) target_score = static_cast<int>(strtol(argv[1], nullptr, 10));
+    int target_score = 0;
+    int search_batches = DEFAULT_SEARCH_BATCHES;
+
+    if (argc >= 2) {
+        // 命令行模式（向后兼容）
+        target_score = static_cast<int>(strtol(argv[1], nullptr, 10));
+        if (argc >= 3) {
+            search_batches = static_cast<int>(strtol(argv[2], nullptr, 10));
+            if (search_batches <= 0) search_batches = DEFAULT_SEARCH_BATCHES;
+        }
+    } else {
+        // 交互模式
+        printf("\n=== OI2048 Reporter ===\n\n");
+
+        // 目标分数（必填）
+        while (target_score <= 0) {
+            printf("请输入目标分数: ");
+            fflush(stdout);
+            char line[256];
+            if (fgets(line, sizeof(line), stdin) == nullptr) {
+                printf("读取输入失败，程序退出。\n");
+                return 1;
+            }
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+            if (line[0] == '\0') {
+                printf("目标分数为必填项，请重新输入。\n");
+                continue;
+            }
+            char *endptr;
+            long val = strtol(line, &endptr, 10);
+            if (endptr == line || *endptr != '\0' || val <= 0) {
+                printf("请输入有效的正整数。\n");
+                continue;
+            }
+            target_score = static_cast<int>(val);
+        }
+
+        // 搜索批数（可选，留空使用默认值）
+        printf("请输入搜索批数 (默认 %d，直接回车跳过): ", DEFAULT_SEARCH_BATCHES);
+        fflush(stdout);
+        char line[256];
+        if (fgets(line, sizeof(line), stdin) != nullptr) {
+            size_t len = strlen(line);
+            if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+            if (line[0] != '\0') {
+                char *endptr;
+                long val = strtol(line, &endptr, 10);
+                if (endptr != line && *endptr == '\0' && val > 0) {
+                    search_batches = static_cast<int>(val);
+                } else {
+                    printf("输入无效，使用默认值 %d。\n", DEFAULT_SEARCH_BATCHES);
+                }
+            }
+        }
+    }
+
     printf("目标分数: %d\n", target_score);
+    printf("搜索批数: %d\n", search_batches);
     printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
 
     SimResult *d_results[2];
@@ -785,7 +842,7 @@ int main(int argc, char *argv[]) {
         printf("批次 %d: 最高 %d 分\n", batch, best_score);
     };
 
-    for (int batch = 0; batch < SEARCH_BATCHES && !found; batch++) {
+    for (int batch = 0; batch < search_batches && !found; batch++) {
         int cur = batch % 2;
 
         if (batch >= 2) {
@@ -799,7 +856,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (batch % 100 == 0) {
-            printf("启动批次 %d/%d...\n", batch, SEARCH_BATCHES);
+            printf("启动批次 %d/%d...\n", batch, search_batches);
         }
 
         simulate_games<<<NUM_BLOCKS, THREADS_PER_BLOCK, 0, stream[cur]>>>(
@@ -821,8 +878,8 @@ int main(int argc, char *argv[]) {
         CUDA_CHECK(cudaStreamSynchronize(stream[i]));
     }
 
-    int first_unprocessed = (SEARCH_BATCHES >= 2) ? (SEARCH_BATCHES - 2) : 0;
-    for (int batch = first_unprocessed; batch < SEARCH_BATCHES && !found; batch++)
+    int first_unprocessed = (search_batches >= 2) ? (search_batches - 2) : 0;
+    for (int batch = first_unprocessed; batch < search_batches && !found; batch++)
         process_batch(batch % 2, batch);
 
     printf("释放 GPU 内存...\n");
