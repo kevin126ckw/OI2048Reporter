@@ -874,8 +874,8 @@ int main(int argc, char *argv[]) {
     }
 
     printf("同步所有流...\n");
-    for (int i = 0; i < 2; i++) {
-        CUDA_CHECK(cudaStreamSynchronize(stream[i]));
+    for (auto & i : stream) {
+        CUDA_CHECK(cudaStreamSynchronize(i));
     }
 
     int first_unprocessed = (search_batches >= 2) ? (search_batches - 2) : 0;
@@ -919,7 +919,7 @@ int main(int argc, char *argv[]) {
 
     // ── 额外：独立 CPU expectimax 游戏（fresh seeds，不受 GPU 种子限制）──
     {
-        uint32_t fresh_seed = static_cast<uint32_t>(time(nullptr) ^ 0xDEADBEEF);
+        auto fresh_seed = static_cast<uint32_t>(time(nullptr) ^ 0xDEADBEEF);
         for (int i = 0; i < 4; i++) {
             int strat = i & 3;
             HostSimResult result = replay_game_expectimax(fresh_seed + i * 999983, strat, target_score);
