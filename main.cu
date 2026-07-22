@@ -254,10 +254,35 @@ __host__ __device__ static const int dist_w_int[7] = {12288, 7619, 4724, 2929, 1
 // ─── OI-2048 纯整数评估（GPU/CPU 结果完全一致）────────────────────────
 __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int cr, int cc, int = 0) {
     int log_grid[16];
+    int phase_max_log = 0;
 #pragma unroll
     for (int i = 0; i < 16; i++) {
         int v = grid[i];
-        log_grid[i] = (v != 0) ? ((v > 0) ? ilog2(v) : ilog2(-v)) : 0;
+        int l = (v != 0) ? ((v > 0) ? ilog2(v) : ilog2(-v)) : 0;
+        log_grid[i] = l;
+        if (l > phase_max_log) phase_max_log = l;
+    }
+
+    // ── 阶段自适应权重（根据最大方块值分三阶段）────────────────
+    int phase_smooth, phase_mono, phase_merge, phase_empty_coef;
+    if (phase_max_log >= 12) {
+        // 后期（≥4096）：优先存活，加强平滑/单调/合并
+        phase_smooth = EVAL_SMOOTH * 3 / 2;       // 1.5x
+        phase_mono   = EVAL_MONO * 5 / 4;         // 1.25x
+        phase_merge  = EVAL_MERGE * 3 / 2;        // 1.5x
+        phase_empty_coef = EVAL_EMPTY_COEF * 4 / 3; // 1.33x
+    } else if (phase_max_log >= 8) {
+        // 中期（≥256）：平衡
+        phase_smooth = EVAL_SMOOTH;
+        phase_mono   = EVAL_MONO;
+        phase_merge  = EVAL_MERGE;
+        phase_empty_coef = EVAL_EMPTY_COEF;
+    } else {
+        // 早期：重视建角，降低平滑/空格权重避免过早优化
+        phase_smooth = EVAL_SMOOTH * 3 / 4;       // 0.75x
+        phase_mono   = EVAL_MONO;                 // 1.0x
+        phase_merge  = EVAL_MERGE * 2 / 3;        // 0.67x
+        phase_empty_coef = EVAL_EMPTY_COEF * 2 / 3; // 0.67x
     }
 
     int score = 0;
@@ -317,9 +342,9 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
                     int lb = log_grid[idx + 1];
                     int diff = log_v - lb;
                     if (diff < 0) diff = -diff;
-                    score -= diff * EVAL_SMOOTH;
-                    score += (v >= b ? 1 : -1) * row_sign * log_v * EVAL_MONO;
-                    if (v == b) score += log_v * EVAL_MERGE;
+                    score -= diff * phase_smooth;
+                    score += (v >= b ? 1 : -1) * row_sign * log_v * phase_mono;
+                    if (v == b) score += log_v * phase_merge;
                 }
             }
 
@@ -329,9 +354,9 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
                     int lb = log_grid[idx + 4];
                     int diff = log_v - lb;
                     if (diff < 0) diff = -diff;
-                    score -= diff * EVAL_SMOOTH;
-                    score += (v >= b ? 1 : -1) * col_sign * log_v * EVAL_MONO;
-                    if (v == b) score += log_v * EVAL_MERGE;
+                    score -= diff * phase_smooth;
+                    score += (v >= b ? 1 : -1) * col_sign * log_v * phase_mono;
+                    if (v == b) score += log_v * phase_merge;
                 }
             }
         }
@@ -358,7 +383,7 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
     }
 
     int empty_bonus = EVAL_EMPTY_BASE;
-    if (max_val > 0) empty_bonus += max_log * max_log * EVAL_EMPTY_COEF;
+    if (max_val > 0) empty_bonus += max_log * max_log * phase_empty_coef;
     score += empty_cnt * empty_bonus;
 
     if (max_pos_r >= 0 && (max_pos_r != cr || max_pos_c != cc)) {
@@ -366,25 +391,51 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
         score -= max_log * dist * EVAL_CORNER_MUL;
     }
 
-    if (empty_cnt <= 3 && max_log >= 10) {
-        bool has_merge = false;
-        for (int i = 0; i < 16 && !has_merge; i++)
-            if (grid[i] <= -8) has_merge = true;
-        for (int r = 0; r < 4 && !has_merge; r++)
-            for (int c = 0; c < 3 && !has_merge; c++) {
+    // ── 死局 / 合并潜力评估（提前触发 + 分级惩罚）──────────────
+    if (empty_cnt <= 6 && phase_max_log >= 8) {
+        int merge_cnt = 0;
+        // 水平相邻可合并对
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 3; c++) {
                 int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
-                if (a > 0 && a == b) has_merge = true;
-                if (a > 0 && b < 0 && (-b) * a <= 65536) has_merge = true;
-                if (a < 0 && b > 0 && (-a) * b <= 65536) has_merge = true;
+                if (a == 0 || b == 0) continue;
+                if (a > 0 && a == b) merge_cnt++;
+                if (a > 0 && b < 0 && (-b) * a <= 65536) merge_cnt++;
+                if (a < 0 && b > 0 && (-a) * b <= 65536) merge_cnt++;
             }
-        for (int c = 0; c < 4 && !has_merge; c++)
-            for (int r = 0; r < 3 && !has_merge; r++) {
+        // 垂直相邻可合并对
+        for (int c = 0; c < 4; c++)
+            for (int r = 0; r < 3; r++) {
                 int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
-                if (a > 0 && a == b) has_merge = true;
-                if (a > 0 && b < 0 && (-b) * a <= 65536) has_merge = true;
-                if (a < 0 && b > 0 && (-a) * b <= 65536) has_merge = true;
+                if (a == 0 || b == 0) continue;
+                if (a > 0 && a == b) merge_cnt++;
+                if (a > 0 && b < 0 && (-b) * a <= 65536) merge_cnt++;
+                if (a < 0 && b > 0 && (-a) * b <= 65536) merge_cnt++;
             }
-        if (!has_merge) score -= max_log * EVAL_DEAD_PENALTY;
+        // ≤-8 非相邻合并潜力（行/列方向各计 1）
+        for (int i = 0; i < 16; i++) {
+            if (grid[i] > -8) continue;
+            int r = i >> 2, c = i & 3;
+            for (int cc1 = 0; cc1 < 4; cc1++) {
+                int b = grid[r * 4 + cc1];
+                if (b > 0 && cc1 != c && (-grid[i]) * b <= 65536) { merge_cnt++; break; }
+            }
+            for (int rr = 0; rr < 4; rr++) {
+                int b = grid[rr * 4 + c];
+                if (b > 0 && rr != r && (-grid[i]) * b <= 65536) { merge_cnt++; break; }
+            }
+        }
+
+        if (merge_cnt == 0) {
+            // 完全死局：重罚
+            score -= phase_max_log * EVAL_DEAD_PENALTY;
+        } else if (empty_cnt <= 3 && merge_cnt <= 1) {
+            // 近乎死局（空格极少 + 合并可能极少）
+            score -= phase_max_log * EVAL_DEAD_PENALTY * 2 / 3;
+        } else if (empty_cnt <= 4 && merge_cnt <= 2) {
+            // 接近死局，轻度惩罚
+            score -= phase_max_log * EVAL_DEAD_PENALTY / 3;
+        }
     }
 
     return score;
@@ -534,9 +585,18 @@ static HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_sco
     return res;
 }
 
-// ─── CPU expectimax 深搜（1-ply 前向搜索，采样空格 + 加权平均）─────────
-// 限制采样数以保持速度，使用随机采样避免位置偏差
+// ─── CPU expectimax 深搜（1-ply 前向搜索，加权采样）─────────────
+// 根据实际生成概率加权：2(78.3%), 4(8.7%), -1(11.2%), -2(1.8%)
+// 为保持速度，每空格只采样 2 和 -1 两种方块（覆盖 ~89.5% 概率），
+// 剩余 10.5% 用 tile=2 的结果近似
 static int choose_move_expectimax(const int *grid, int cr, int cc, const int *pos_w) {
+    // 加权系数（总权重 1000）
+    // 2: 783, 4: 87(近似用2), -1: 112, -2: 18(近似用2)
+    // → tile2 综合权重 = 783 + 87 + 18 = 888, tile-1 权重 = 112
+    constexpr int W2 = 888;
+    constexpr int WN1 = 112;
+    constexpr int WSUM = W2 + WN1; // 1000
+
     int best_expected = -2000000000;
     int best_dir = -1;
 
@@ -547,7 +607,6 @@ static int choose_move_expectimax(const int *grid, int cr, int cc, const int *po
         apply_move(temp, dir, &moved);
         if (!moved) continue;
 
-        // 找到移动后的空格
         int empty[16];
         int empty_cnt = 0;
         for (int i = 0; i < 16; i++) if (temp[i] == 0) empty[empty_cnt++] = i;
@@ -558,33 +617,56 @@ static int choose_move_expectimax(const int *grid, int cr, int cc, const int *po
             continue;
         }
 
-        // 跳跃采样（步长 ≥1，确保覆盖棋盘各区域，最多 5 个样本）
-        int step = (empty_cnt <= 5) ? 1 : (empty_cnt / 5);
+        // 跳跃采样（最多 4 个样本，每个样本尝试 2 和 -1 两种方块）
+        int step = (empty_cnt <= 4) ? 1 : (empty_cnt / 4);
         int samples = 0;
-        int expected_sum = 0;
+        int weighted_sum = 0;
 
-        for (int si = 0; si < empty_cnt && samples < 5; si += step) {
-            int after_tile[16];
-            copy_grid(temp, after_tile);
-            after_tile[empty[si]] = 2; // 最常见生成 (~78%)
+        for (int si = 0; si < empty_cnt && samples < 4; si += step) {
+            int pos = empty[si];
 
-            // 玩家最佳应对（随机方块放置后的最佳移动）
-            int best_response = -2000000000;
-            for (int d2 = 0; d2 < 4; d2++) {
-                int temp2[16];
-                copy_grid(after_tile, temp2);
-                bool moved2;
-                apply_move(temp2, d2, &moved2);
-                if (!moved2) continue;
-                int e = evaluate(temp2, pos_w, cr, cc);
-                if (e > best_response) best_response = e;
+            // ── 放置 tile=2 并做 1-ply 最佳应对 ──
+            int best_r2 = -2000000000;
+            {
+                int after_tile[16];
+                copy_grid(temp, after_tile);
+                after_tile[pos] = 2;
+                for (int d2 = 0; d2 < 4; d2++) {
+                    int temp2[16];
+                    copy_grid(after_tile, temp2);
+                    bool moved2;
+                    apply_move(temp2, d2, &moved2);
+                    if (!moved2) continue;
+                    int e = evaluate(temp2, pos_w, cr, cc);
+                    if (e > best_r2) best_r2 = e;
+                }
+                if (best_r2 < -1900000000)
+                    best_r2 = evaluate(after_tile, pos_w, cr, cc);
             }
-            if (best_response < -1900000000)
-                best_response = evaluate(after_tile, pos_w, cr, cc);
-            expected_sum += best_response;
+
+            // ── 放置 tile=-1 并做 1-ply 最佳应对 ──
+            int best_rn1 = -2000000000;
+            {
+                int after_tile[16];
+                copy_grid(temp, after_tile);
+                after_tile[pos] = -1;
+                for (int d2 = 0; d2 < 4; d2++) {
+                    int temp2[16];
+                    copy_grid(after_tile, temp2);
+                    bool moved2;
+                    apply_move(temp2, d2, &moved2);
+                    if (!moved2) continue;
+                    int e = evaluate(temp2, pos_w, cr, cc);
+                    if (e > best_rn1) best_rn1 = e;
+                }
+                if (best_rn1 < -1900000000)
+                    best_rn1 = evaluate(after_tile, pos_w, cr, cc);
+            }
+
+            weighted_sum += best_r2 * W2 + best_rn1 * WN1;
             samples++;
         }
-        int expected = expected_sum / samples;
+        int expected = weighted_sum / (samples * WSUM);
 
         if (expected > best_expected) {
             best_expected = expected;
@@ -788,6 +870,7 @@ int main(int argc, char *argv[]) {
     SimResult *h_results[2];
     cudaStream_t stream[2];
 
+    #pragma unroll
     for (int i = 0; i < 2; i++) {
         CUDA_CHECK(cudaMalloc(&d_results[i], NUM_THREADS * sizeof(SimResult)));
         CUDA_CHECK(cudaMemset(d_results[i], 0, NUM_THREADS * sizeof(SimResult)));
