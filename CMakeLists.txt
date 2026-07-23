@@ -8,11 +8,16 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 # 自动检测 GPU 架构
 set(CMAKE_CUDA_ARCHITECTURES native)
 
-add_executable(OI2048Reporter main.cu)
+add_executable(OI2048Reporter
+    main.cu
+    kernel.cu
+    replay.cu
+    submit_format.cu
+)
 
 set_target_properties(OI2048Reporter PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON)
 
 target_compile_options(OI2048Reporter PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:-use_fast_math>
+        $<$<COMPILE_LANGUAGE:CUDA>:-use_fast_math -diag-suppress=1835,20091>
 )
