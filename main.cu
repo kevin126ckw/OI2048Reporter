@@ -1,9 +1,10 @@
 #include <cuda_runtime.h>
-#include <cstdio>
+#include <iostream>
+#include <fstream>
+#include <iomanip>
 #include <cstdlib>
 #include <ctime>
 #include <cstdint>
-#include <cstring>
 #include <string>
 
 #include "kernel.cuh"
@@ -17,7 +18,7 @@ using std::string;
     do { \
         cudaError_t err = call; \
         if (err != cudaSuccess) { \
-            printf("CUDA 错误 %s:%d: %s (调用: %s)\n", __FILE__, __LINE__, cudaGetErrorString(err), #call); \
+            std::cout << "CUDA 错误 " << __FILE__ << ":" << __LINE__ << ": " << cudaGetErrorString(err) << " (调用: " << #call << ")" << std::endl; \
             return 1; \
         } \
     } while(0)
@@ -26,17 +27,17 @@ int main(int argc, char *argv[]) {
     int cuda_devices;
     cudaError_t err = cudaGetDeviceCount(&cuda_devices);
     if (err != cudaSuccess) {
-        printf("错误: 无法检测 CUDA 设备!\n");
-        printf("CUDA 错误: %s (code %d)\n", cudaGetErrorString(err), err);
-        printf("\n可能原因:\n");
-        printf("  1. GPU 驱动未正确加载\n");
-        printf("  2. WDDM TDR 超时（GPU 在之前的计算中崩溃，驱动需要重置）\n");
-        printf("  3. CUDA 版本与 GPU 不匹配\n");
-        printf("  4. GPU 正在被其他进程占用\n");
-        printf("\n建议: 重启电脑后重试\n");
+        std::cout << "错误: 无法检测 CUDA 设备!" << std::endl;
+        std::cout << "CUDA 错误: " << cudaGetErrorString(err) << " (code " << err << ")" << std::endl;
+        std::cout << std::endl << "可能原因:" << std::endl;
+        std::cout << "  1. GPU 驱动未正确加载" << std::endl;
+        std::cout << "  2. WDDM TDR 超时（GPU 在之前的计算中崩溃，驱动需要重置）" << std::endl;
+        std::cout << "  3. CUDA 版本与 GPU 不匹配" << std::endl;
+        std::cout << "  4. GPU 正在被其他进程占用" << std::endl;
+        std::cout << std::endl << "建议: 重启电脑后重试" << std::endl;
         return 1;
     }
-    printf("检测到 %d 个 CUDA 设备\n", cuda_devices);
+    std::cout << "检测到 " << cuda_devices << " 个 CUDA 设备" << std::endl;
 
     int target_score = 0;
     int search_batches = DEFAULT_SEARCH_BATCHES;
@@ -50,54 +51,48 @@ int main(int argc, char *argv[]) {
         }
     } else {
         // 交互模式
-        printf("\n=== OI2048 Reporter ===\n\n");
+        std::cout << std::endl << "=== OI2048 Reporter ===" << std::endl << std::endl;
 
         // 目标分数（必填）
         while (target_score <= 0) {
-            printf("请输入目标分数: ");
-            fflush(stdout);
+            std::cout << "请输入目标分数: " << std::flush;
             char line[256];
-            if (fgets(line, sizeof(line), stdin) == nullptr) {
-                printf("读取输入失败，程序退出。\n");
+            if (!std::cin.getline(line, sizeof(line))) {
+                std::cout << "读取输入失败，程序退出。" << std::endl;
                 return 1;
             }
-            size_t len = strlen(line);
-            if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
             if (line[0] == '\0') {
-                printf("目标分数为必填项，请重新输入。\n");
+                std::cout << "目标分数为必填项，请重新输入。" << std::endl;
                 continue;
             }
             char *endptr;
             long val = strtol(line, &endptr, 10);
             if (endptr == line || *endptr != '\0' || val <= 0) {
-                printf("请输入有效的正整数。\n");
+                std::cout << "请输入有效的正整数。" << std::endl;
                 continue;
             }
             target_score = static_cast<int>(val);
         }
 
         // 搜索批数（可选，留空使用默认值）
-        printf("请输入搜索批数 (默认 %d，直接回车跳过): ", DEFAULT_SEARCH_BATCHES);
-        fflush(stdout);
+        std::cout << "请输入搜索批数 (默认 " << DEFAULT_SEARCH_BATCHES << "，直接回车跳过): " << std::flush;
         char line[256];
-        if (fgets(line, sizeof(line), stdin) != nullptr) {
-            size_t len = strlen(line);
-            if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+        if (std::cin.getline(line, sizeof(line))) {
             if (line[0] != '\0') {
                 char *endptr;
                 long val = strtol(line, &endptr, 10);
                 if (endptr != line && *endptr == '\0' && val > 0) {
                     search_batches = static_cast<int>(val);
                 } else {
-                    printf("输入无效，使用默认值 %d。\n", DEFAULT_SEARCH_BATCHES);
+                    std::cout << "输入无效，使用默认值 " << DEFAULT_SEARCH_BATCHES << "。" << std::endl;
                 }
             }
         }
     }
 
-    printf("目标分数: %d\n", target_score);
-    printf("搜索批数: %d\n", search_batches);
-    printf("启动 %d 个线程在 GPU 上并行搜索...\n", NUM_THREADS);
+    std::cout << "目标分数: " << target_score << std::endl;
+    std::cout << "搜索批数: " << search_batches << std::endl;
+    std::cout << "启动 " << NUM_THREADS << " 个线程在 GPU 上并行搜索..." << std::endl;
 
     SimResult *d_results[2];
     SimResult *h_results[2];
@@ -111,7 +106,7 @@ int main(int argc, char *argv[]) {
                       cudaHostAllocDefault));
         CUDA_CHECK(cudaStreamCreate(&stream[i]));
     }
-    printf("GPU 内存分配完成\n");
+    std::cout << "GPU 内存分配完成" << std::endl;
 
     auto base_seed = static_cast<uint64_t>(time(nullptr));
 
@@ -151,11 +146,11 @@ int main(int argc, char *argv[]) {
                 best_tid = i;
                 best_batch = batch;
                 found = true;
-                printf("批次 %d: 最高 %d 分 [已达标!]\n", batch, best_score);
+                std::cout << "批次 " << batch << ": 最高 " << best_score << " 分 [已达标!]" << std::endl;
                 return;
             }
         }
-        printf("批次 %d: 最高 %d 分\n", batch, best_score);
+        std::cout << "批次 " << batch << ": 最高 " << best_score << " 分" << std::endl;
     };
 
     for (int batch = 0; batch < search_batches && !found; batch++) {
@@ -165,14 +160,14 @@ int main(int argc, char *argv[]) {
             cudaStreamSynchronize(stream[cur]);
             cudaError_t sync_err = cudaGetLastError();
             if (sync_err != cudaSuccess) {
-                printf("CUDA 内核错误 批次%d: %s\n", batch - 2, cudaGetErrorString(sync_err));
+                std::cout << "CUDA 内核错误 批次" << (batch - 2) << ": " << cudaGetErrorString(sync_err) << std::endl;
                 // 继续处理已有结果
             }
             process_batch(cur, batch - 2);
         }
 
         if (batch % 100 == 0) {
-            printf("启动批次 %d/%d...\n", batch, search_batches);
+            std::cout << "启动批次 " << batch << "/" << search_batches << "..." << std::endl;
         }
 
         simulate_games<<<NUM_BLOCKS, THREADS_PER_BLOCK, 0, stream[cur]>>>(
@@ -180,7 +175,7 @@ int main(int argc, char *argv[]) {
 
         cudaError_t launch_err = cudaGetLastError();
         if (launch_err != cudaSuccess) {
-            printf("内核启动失败 批次%d: %s\n", batch, cudaGetErrorString(launch_err));
+            std::cout << "内核启动失败 批次" << batch << ": " << cudaGetErrorString(launch_err) << std::endl;
             break;
         }
 
@@ -189,7 +184,7 @@ int main(int argc, char *argv[]) {
                         cudaMemcpyDeviceToHost, stream[cur]));
     }
 
-    printf("同步所有流...\n");
+    std::cout << "同步所有流..." << std::endl;
     for (auto & i : stream) {
         CUDA_CHECK(cudaStreamSynchronize(i));
     }
@@ -198,37 +193,37 @@ int main(int argc, char *argv[]) {
     for (int batch = first_unprocessed; batch < search_batches && !found; batch++)
         process_batch(batch % 2, batch);
 
-    printf("释放 GPU 内存...\n");
+    std::cout << "释放 GPU 内存..." << std::endl;
     for (int i = 0; i < 2; i++) {
         CUDA_CHECK(cudaFree(d_results[i]));
         CUDA_CHECK(cudaFreeHost(h_results[i]));
         CUDA_CHECK(cudaStreamDestroy(stream[i]));
     }
-    printf("GPU 内存释放完成\n");
+    std::cout << "GPU 内存释放完成" << std::endl;
 
     if (!found) {
-        printf("未达到目标分数，最终最佳: %d 分 (线程%d, 批次%d)，将使用此结果。\n", best_score, best_tid, best_batch);
+        std::cout << "未达到目标分数，最终最佳: " << best_score << " 分 (线程" << best_tid << ", 批次" << best_batch << ")，将使用此结果。" << std::endl;
     }
 
     // Host 端回放生成完整 history
     if (best_tid < 0 || best_batch < 0) {
-        printf("错误: 没有找到任何有效结果 (best_tid=%d, best_batch=%d)\n", best_tid, best_batch);
+        std::cout << "错误: 没有找到任何有效结果 (best_tid=" << best_tid << ", best_batch=" << best_batch << ")" << std::endl;
         return 1;
     }
     uint64_t batch_seed = base_seed + best_batch * NUM_THREADS;
     auto rng_seed = static_cast<uint32_t>(batch_seed + best_tid * 2654435761ULL);
-    printf("开始回放...\n");
+    std::cout << "开始回放..." << std::endl;
     HostSimResult best = replay_game(rng_seed, best_tid % 4, target_score);
-    printf("GPU 分数: %d  |  CPU 贪婪回放: %d\n", best_score, best.score);
+    std::cout << "GPU 分数: " << best_score << "  |  CPU 贪婪回放: " << best.score << std::endl;
 
     // ── CPU expectimax 深搜（Top-K 种子） ──
-    if (top_count > 0) printf("\n对 Top-%d 种子进行 CPU expectimax 深搜...\n", top_count);
+    if (top_count > 0) std::cout << std::endl << "对 Top-" << top_count << " 种子进行 CPU expectimax 深搜..." << std::endl;
     for (int k = 0; k < top_count; k++) {
         uint64_t bs = base_seed + static_cast<uint64_t>(top_seeds[k].batch) * NUM_THREADS;
         auto rs = static_cast<uint32_t>(bs + top_seeds[k].tid * 2654435761ULL);
         HostSimResult result = replay_game_expectimax(rs, top_seeds[k].tid % 4, target_score);
         if (result.score > best.score) {
-            printf("  种子 #%d: GPU=%d → CPU expectimax=%d ⬆ 提升!\n", k, top_seeds[k].score, result.score);
+            std::cout << "  种子 #" << k << ": GPU=" << top_seeds[k].score << " → CPU expectimax=" << result.score << " ⬆ 提升!" << std::endl;
             best = result;
         }
     }
@@ -240,33 +235,33 @@ int main(int argc, char *argv[]) {
             int strat = i & 3;
             HostSimResult result = replay_game_expectimax(fresh_seed + i * 999983, strat, target_score);
             if (result.score > best.score) {
-                printf("  独立 expectimax #%d (策略%d): %d ⬆ 提升!\n", i, strat, result.score);
+                std::cout << "  独立 expectimax #" << i << " (策略" << strat << "): " << result.score << " ⬆ 提升!" << std::endl;
                 best = result;
             }
         }
     }
 
-    printf("\n========== 生成结果 ==========\n");
-    printf("分数: %d\n", best.score);
-    printf("步数: %d\n", best.steps);
-    printf("最大方块 log2: %d\n", max_value_log2(best.final_grid));
-    printf("最终棋盘:\n");
+    std::cout << std::endl << "========== 生成结果 ==========" << std::endl;
+    std::cout << "分数: " << best.score << std::endl;
+    std::cout << "步数: " << best.steps << std::endl;
+    std::cout << "最大方块 log2: " << max_value_log2(best.final_grid) << std::endl;
+    std::cout << "最终棋盘:" << std::endl;
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
             int v = best.final_grid[r * 4 + c];
-            if (v == 0) printf("    _");
-            else printf("%5d", v);
+            if (v == 0) std::cout << "    _";
+            else std::cout << std::setw(5) << v;
         }
-        printf("\n");
+        std::cout << std::endl;
     }
 
     const string json = generate_submit_data(best, false);
-    if (FILE *fout = fopen("submit_output.json", "w")) {
-        fprintf(fout, "%s\n", json.c_str());
-        fclose(fout);
-        printf("\n完整 JSON 已写入 submit_output.json (%zu 字节)\n", json.size());
+    if (std::ofstream fout("submit_output.json"); fout.is_open()) {
+        fout << json << std::endl;
+        fout.close();
+        std::cout << std::endl << "完整 JSON 已写入 submit_output.json (" << json.size() << " 字节)" << std::endl;
     } else {
-        printf("\n无法写入文件！\n");
+        std::cout << std::endl << "无法写入文件！" << std::endl;
     }
 
     return 0;
