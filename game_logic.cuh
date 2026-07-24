@@ -114,7 +114,7 @@ __host__ __device__ static int slide_line(int *arr) {
 __host__ __device__ static int apply_move(int *grid, const int direction, bool *moved_out = nullptr) {
     int score = 0;
     int backup[16];
-    copy_grid(grid, backup);
+    if (moved_out) copy_grid(grid, backup);
 
     if (direction == 0) {
         for (int col = 0; col < 4; col++) {

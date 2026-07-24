@@ -93,12 +93,18 @@ static int choose_move_expectimax(const int *grid, const int cr, const int cc, c
             continue;
         }
 
-        // 跳跃采样（最多 4 个样本，每个样本尝试 2 和 -1 两种方块）
-        const int step = empty_cnt <= 4 ? 1 : empty_cnt / 4;
+        // 自适应采样：空格越少决策越关键，增加采样数
+        int max_samples;
+        if (empty_cnt <= 4) max_samples = empty_cnt;        // ≤4: 全部采样
+        else if (empty_cnt <= 6) max_samples = 6;            // 5-6: 最多 6 个
+        else if (empty_cnt <= 10) max_samples = 5;           // 7-10: 5 个
+        else max_samples = 4;                                 // >10: 4 个足够
+
+        const int step = empty_cnt <= max_samples ? 1 : empty_cnt / max_samples;
         int samples = 0;
         int weighted_sum = 0;
 
-        for (int si = 0; si < empty_cnt && samples < 4; si += step) {
+        for (int si = 0; si < empty_cnt && samples < max_samples; si += step) {
             const int pos = empty[si];
 
             // ── 放置 tile=2 并做 1-ply 最佳应对 ──
