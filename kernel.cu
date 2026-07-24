@@ -1,23 +1,24 @@
 #include "kernel.cuh"
 #include "evaluate.cuh"
 
-__global__ __launch_bounds__(256, 2) void simulate_games(uint64_t base_seed,
-        int target_score, SimResult *results) {
-    int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+__global__ __launch_bounds__(256, 2) void simulate_games(const uint64_t base_seed,
+        const int target_score, SimResult *results) {
+    const int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
     if (tid >= NUM_THREADS) return;
 
-    int strategy = tid & 3;
-    int cr = (strategy >= 2) ? 3 : 0;
-    int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
+    const int strategy = tid & 3;
+    const int cr = strategy >= 2 ? 3 : 0;
+    const int cc = strategy == 1 || strategy == 3 ? 3 : 0;
     int pos_w[16];
 #pragma unroll
     for (int i = 0; i < 16; i++) {
-        int r = i >> 2, c = i & 3;
+        const int r = i >> 2;
+        const int c = i & 3;
         pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     auto rng = static_cast<uint32_t>(base_seed + tid * 2654435761ULL);
-    int grid[16] = {0};
+    int grid[16] = {};
 
     add_random_tile(grid, &rng, true);
     add_random_tile(grid, &rng, true);
@@ -36,10 +37,9 @@ __global__ __launch_bounds__(256, 2) void simulate_games(uint64_t base_seed,
             int temp[16];
             copy_grid(grid, temp);
             bool moved;
-            int move_score = apply_move(temp, dir, &moved);
+            const int move_score = apply_move(temp, dir, &moved);
             if (!moved) continue;
-            int e = evaluate(temp, pos_w, cr, cc);
-            if (e > best_eval) {
+            if (const int e = evaluate(temp, pos_w, cr, cc); e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
                 copy_grid(temp, best_temp);

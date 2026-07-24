@@ -68,15 +68,14 @@ __host__ __device__ static int slide_line(int *arr) {
             farthest--;
         }
 
-        int prev = farthest - 1;
+        const int prev = farthest - 1;
         bool did_merge = false;
 
         if (prev >= 0 && arr[prev] != 0 && !merged[prev]) {
-            int a = arr[prev];
-            int b = arr[i];
+            const int a = arr[prev];
 
             // 同值合并（不检查邻接）
-            if (a == b && a <= 32768 && a >= -2) {
+            if (const int b = arr[i]; a == b && a <= 32768 && a >= -2) {
                 arr[prev] = a * 2;
                 score += a * 2;
                 arr[i] = 0;
@@ -112,7 +111,7 @@ __host__ __device__ static int slide_line(int *arr) {
 
 // ─── 朝指定方向移动整个棋盘（原地修改），返回本次得分 ──────────────────
 // dir: 0=上, 1=右, 2=下, 3=左
-__host__ __device__ static int apply_move(int *grid, int direction, bool *moved_out = nullptr) {
+__host__ __device__ static int apply_move(int *grid, const int direction, bool *moved_out = nullptr) {
     int score = 0;
     int backup[16];
     copy_grid(grid, backup);
@@ -156,44 +155,44 @@ __host__ __device__ static bool can_move(const int *grid) {
     if (count_empty(grid) > 0) return true;
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 3; c++) {
-            int a = grid[r * 4 + c];
-            int b = grid[r * 4 + c + 1];
-            if (a <= -1 && b > 0 && (-a) * b <= 65536) return true;
-            if (a > 0 && b <= -1 && (-b) * a <= 65536) return true;
+            const int a = grid[r * 4 + c];
+            const int b = grid[r * 4 + c + 1];
+            if (a <= -1 && b > 0 && -a * b <= 65536) return true;
+            if (a > 0 && b <= -1 && -b * a <= 65536) return true;
             if (a == b && a <= 32768 && a >= -2) return true;
         }
     }
     for (int c = 0; c < 4; c++) {
         for (int r = 0; r < 3; r++) {
-            int a = grid[r * 4 + c];
-            int b = grid[(r + 1) * 4 + c];
-            if (a <= -1 && b > 0 && (-a) * b <= 65536) return true;
-            if (a > 0 && b <= -1 && (-b) * a <= 65536) return true;
+            const int a = grid[r * 4 + c];
+            const int b = grid[(r + 1) * 4 + c];
+            if (a <= -1 && b > 0 && -a * b <= 65536) return true;
+            if (a > 0 && b <= -1 && -b * a <= 65536) return true;
             if (a == b && a <= 32768 && a >= -2) return true;
         }
     }
     // 检查非相邻的倍率合并（<= -8 豁免规则）
     for (int r = 0; r < 4; r++) {
         for (int c1 = 0; c1 < 4; c1++) {
-            int a = grid[r * 4 + c1];
+            const int a = grid[r * 4 + c1];
             if (a == 0) continue;
             for (int c2 = c1 + 2; c2 < 4; c2++) {
-                int b = grid[r * 4 + c2];
+                const int b = grid[r * 4 + c2];
                 if (b == 0) continue;
-                if (a <= -1 && a <= -8 && b > 0 && (-a) * b <= 65536) return true;
-                if (b <= -1 && b <= -8 && a > 0 && (-b) * a <= 65536) return true;
+                if (a <= -1 && a <= -8 && b > 0 && -a * b <= 65536) return true;
+                if (b <= -1 && b <= -8 && a > 0 && -b * a <= 65536) return true;
             }
         }
     }
     for (int c = 0; c < 4; c++) {
         for (int r1 = 0; r1 < 4; r1++) {
-            int a = grid[r1 * 4 + c];
+            const int a = grid[r1 * 4 + c];
             if (a == 0) continue;
             for (int r2 = r1 + 2; r2 < 4; r2++) {
-                int b = grid[r2 * 4 + c];
+                const int b = grid[r2 * 4 + c];
                 if (b == 0) continue;
-                if (a <= -1 && a <= -8 && b > 0 && (-a) * b <= 65536) return true;
-                if (b <= -1 && b <= -8 && a > 0 && (-b) * a <= 65536) return true;
+                if (a <= -1 && a <= -8 && b > 0 && -a * b <= 65536) return true;
+                if (b <= -1 && b <= -8 && a > 0 && -b * a <= 65536) return true;
             }
         }
     }
@@ -201,23 +200,22 @@ __host__ __device__ static bool can_move(const int *grid) {
 }
 
 // ─── 随机生成新方块 ────────────────────────────────────────────────────
-__host__ __device__ static void add_random_tile(int *grid, uint32_t *rng, bool is_start = false) {
+__host__ __device__ static void add_random_tile(int *grid, uint32_t *rng, const bool is_start = false) {
     int empty[16];
     int cnt = 0;
     for (int i = 0; i < 16; i++) if (grid[i] == 0) empty[cnt++] = i;
     if (cnt == 0) return;
-    int pos = empty[xorshift32(rng) % cnt];
+    const int pos = empty[xorshift32(rng) % cnt];
 
-    uint32_t r = xorshift32(rng) % 100;
-    if (is_start || r < 87) {
-        grid[pos] = (xorshift32(rng) % 10 < 9) ? 2 : 4;
+    if (const uint32_t r = xorshift32(rng) % 100; is_start || r < 87) {
+        grid[pos] = xorshift32(rng) % 10 < 9 ? 2 : 4;
     } else {
-        grid[pos] = (xorshift32(rng) % 100 < 86) ? -1 : -2;
+        grid[pos] = xorshift32(rng) % 100 < 86 ? -1 : -2;
     }
 }
 
 // ─── log2 快速计算（GPU 用硬件 __clz，CPU 回退到循环）─────────────────────
-__host__ __device__ static inline int ilog2(int v) {
+__host__ __device__ static int ilog2(int v) {
 #if defined(__CUDA_ARCH__)
     return 31 - __clz((unsigned int)v);
 #else

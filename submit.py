@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: UTF-8 -*-
 """2048 成绩提交脚本 —— 从 submit_output.json 读取数据、验证并 POST"""
 
 import json
@@ -41,7 +42,7 @@ def slide_line(arr: list) -> int:
             b = arr[i]
 
             # 同值合并（不检查邻接）
-            if a == b and a <= 32768 and a >= -2:
+            if a == b and 32768 >= a >= -2:
                 arr[prev] = a * 2
                 score += a * 2
                 arr[i] = 0

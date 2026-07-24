@@ -8,7 +8,7 @@ using std::string;
 static string generate_gameid() {
     static constexpr char charset[] = "0123456789qwertyuiopasdfghjklzxcvbnm";
     static std::mt19937 rng(std::random_device{}());
-    static std::uniform_int_distribution<int> dist(0, 35);
+    static std::uniform_int_distribution dist(0, 35);
     string id;
     for (int i = 0; i < 16; i++) id += charset[dist(rng)];
     return id;
@@ -20,8 +20,7 @@ static string grid_to_json(const int *grid) {
     for (int r = 0; r < 4; r++) {
         s += '[';
         for (int c = 0; c < 4; c++) {
-            int v = grid[r * 4 + c];
-            if (v == 0) s += "null";
+            if (const int v = grid[r * 4 + c]; v == 0) s += "null";
             else s += std::to_string(v);
             if (c < 3) s += ',';
         }
@@ -46,10 +45,10 @@ static string history_to_json(const std::vector<HistoryEntry> &history) {
     return s;
 }
 
-string generate_submit_data(const HostSimResult &result, bool cheated) {
-    string gameid = generate_gameid();
-    int mv = max_value_log2(result.final_grid);
-    string fg_json = grid_to_json(result.final_grid);
+string generate_submit_data(const HostSimResult &result, const bool cheated) {
+    const string gameid = generate_gameid();
+    const int mv = max_value_log2(result.final_grid);
+    const string fg_json = grid_to_json(result.final_grid);
 
     string data = "{";
     data += R"("gameid":")" + gameid + "\",";

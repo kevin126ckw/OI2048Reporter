@@ -18,5 +18,5 @@ struct HostSimResult {
 };
 
 // ─── Host 端回放函数 ──────────────────────────────────────────────────
-HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score = -1);
-HostSimResult replay_game_expectimax(uint32_t rng_seed, int strategy, int target_score = -1);
+HostSimResult replay_game(uint32_t rng_seed, int strategy);
+HostSimResult replay_game_expectimax(uint32_t rng_seed, int strategy);

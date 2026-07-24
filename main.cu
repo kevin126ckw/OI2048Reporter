@@ -25,8 +25,7 @@ using std::string;
 
 int main(int argc, char *argv[]) {
     int cuda_devices;
-    cudaError_t err = cudaGetDeviceCount(&cuda_devices);
-    if (err != cudaSuccess) {
+    if (cudaError_t err = cudaGetDeviceCount(&cuda_devices); err != cudaSuccess) {
         std::cout << "错误: 无法检测 CUDA 设备!" << std::endl;
         std::cout << "CUDA 错误: " << cudaGetErrorString(err) << " (code " << err << ")" << std::endl;
         std::cout << std::endl << "可能原因:" << std::endl;
@@ -80,8 +79,7 @@ int main(int argc, char *argv[]) {
         if (std::cin.getline(line, sizeof(line))) {
             if (line[0] != '\0') {
                 char *endptr;
-                long val = strtol(line, &endptr, 10);
-                if (endptr != line && *endptr == '\0' && val > 0) {
+                if (long val = strtol(line, &endptr, 10); endptr != line && *endptr == '\0' && val > 0) {
                     search_batches = static_cast<int>(val);
                 } else {
                     std::cout << "输入无效，使用默认值 " << DEFAULT_SEARCH_BATCHES << "。" << std::endl;
@@ -121,20 +119,20 @@ int main(int argc, char *argv[]) {
     TopSeed top_seeds[TOP_K] = {};
     int top_count = 0;
 
-    auto update_top_k = [&](int score, int tid, int batch) {
+    auto update_top_k = [&](const int score, const int tid, const int batch) {
         int pos = top_count;
         while (pos > 0 && top_seeds[pos - 1].score < score) pos--;
         if (pos >= TOP_K) return;
-        int limit = (top_count < TOP_K) ? top_count : TOP_K - 1;
+        const int limit = top_count < TOP_K ? top_count : TOP_K - 1;
         for (int i = limit; i > pos; i--)
             top_seeds[i] = top_seeds[i - 1];
-        top_seeds[pos] = {score, tid, batch};
+        top_seeds[pos] = {.score = score, .tid = tid, .batch = batch};
         if (top_count < TOP_K) top_count++;
     };
 
-    auto process_batch = [&](int slot, int batch) {
+    auto process_batch = [&](const int slot, const int batch) {
         for (int i = 0; i < NUM_THREADS; i++) {
-            int s = h_results[slot][i].score;
+            const int s = h_results[slot][i].score;
             if (s > best_score) {
                 best_score = s;
                 best_tid = i;
@@ -158,8 +156,7 @@ int main(int argc, char *argv[]) {
 
         if (batch >= 2) {
             cudaStreamSynchronize(stream[cur]);
-            cudaError_t sync_err = cudaGetLastError();
-            if (sync_err != cudaSuccess) {
+            if (cudaError_t sync_err = cudaGetLastError(); sync_err != cudaSuccess) {
                 std::cout << "CUDA 内核错误 批次" << (batch - 2) << ": " << cudaGetErrorString(sync_err) << std::endl;
                 // 继续处理已有结果
             }
@@ -173,8 +170,7 @@ int main(int argc, char *argv[]) {
         simulate_games<<<NUM_BLOCKS, THREADS_PER_BLOCK, 0, stream[cur]>>>(
             base_seed + batch * NUM_THREADS, target_score, d_results[cur]);
 
-        cudaError_t launch_err = cudaGetLastError();
-        if (launch_err != cudaSuccess) {
+        if (cudaError_t launch_err = cudaGetLastError(); launch_err != cudaSuccess) {
             std::cout << "内核启动失败 批次" << batch << ": " << cudaGetErrorString(launch_err) << std::endl;
             break;
         }
@@ -189,7 +185,7 @@ int main(int argc, char *argv[]) {
         CUDA_CHECK(cudaStreamSynchronize(i));
     }
 
-    int first_unprocessed = (search_batches >= 2) ? (search_batches - 2) : 0;
+    int first_unprocessed = search_batches >= 2 ? search_batches - 2 : 0;
     for (int batch = first_unprocessed; batch < search_batches && !found; batch++)
         process_batch(batch % 2, batch);
 
@@ -213,7 +209,7 @@ int main(int argc, char *argv[]) {
     uint64_t batch_seed = base_seed + best_batch * NUM_THREADS;
     auto rng_seed = static_cast<uint32_t>(batch_seed + best_tid * 2654435761ULL);
     std::cout << "开始回放..." << std::endl;
-    HostSimResult best = replay_game(rng_seed, best_tid % 4, target_score);
+    HostSimResult best = replay_game(rng_seed, best_tid % 4);
     std::cout << "GPU 分数: " << best_score << "  |  CPU 贪婪回放: " << best.score << std::endl;
 
     // ── CPU expectimax 深搜（Top-K 种子） ──
@@ -221,8 +217,7 @@ int main(int argc, char *argv[]) {
     for (int k = 0; k < top_count; k++) {
         uint64_t bs = base_seed + static_cast<uint64_t>(top_seeds[k].batch) * NUM_THREADS;
         auto rs = static_cast<uint32_t>(bs + top_seeds[k].tid * 2654435761ULL);
-        HostSimResult result = replay_game_expectimax(rs, top_seeds[k].tid % 4, target_score);
-        if (result.score > best.score) {
+        if (HostSimResult result = replay_game_expectimax(rs, top_seeds[k].tid % 4); result.score > best.score) {
             std::cout << "  种子 #" << k << ": GPU=" << top_seeds[k].score << " → CPU expectimax=" << result.score << " ⬆ 提升!" << std::endl;
             best = result;
         }
@@ -233,8 +228,7 @@ int main(int argc, char *argv[]) {
         auto fresh_seed = static_cast<uint32_t>(time(nullptr) ^ 0xDEADBEEF);
         for (int i = 0; i < 4; i++) {
             int strat = i & 3;
-            HostSimResult result = replay_game_expectimax(fresh_seed + i * 999983, strat, target_score);
-            if (result.score > best.score) {
+            if (HostSimResult result = replay_game_expectimax(fresh_seed + i * 999983, strat); result.score > best.score) {
                 std::cout << "  独立 expectimax #" << i << " (策略" << strat << "): " << result.score << " ⬆ 提升!" << std::endl;
                 best = result;
             }
@@ -248,8 +242,7 @@ int main(int argc, char *argv[]) {
     std::cout << "最终棋盘:" << std::endl;
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
-            int v = best.final_grid[r * 4 + c];
-            if (v == 0) std::cout << "    _";
+            if (int v = best.final_grid[r * 4 + c]; v == 0) std::cout << "    _";
             else std::cout << std::setw(5) << v;
         }
         std::cout << std::endl;

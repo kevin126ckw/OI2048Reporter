@@ -26,7 +26,7 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
 #pragma unroll
     for (int i = 0; i < 16; i++) {
         int v = grid[i];
-        int l = (v != 0) ? ((v > 0) ? ilog2(v) : ilog2(-v)) : 0;
+        int l = v != 0 ? (v > 0 ? ilog2(v) : ilog2(-v)) : 0;
         log_grid[i] = l;
         if (l > phase_max_log) phase_max_log = l;
     }
@@ -59,8 +59,8 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
     int max_log = 0;
     int max_pos_r = -1;
     int max_pos_c = -1;
-    int row_sign = (cc == 3) ? -1 : 1;
-    int col_sign = (cr == 3) ? -1 : 1;
+    int row_sign = cc == 3 ? -1 : 1;
+    int col_sign = cr == 3 ? -1 : 1;
 
 #pragma unroll
     for (int r = 0; r < 4; r++) {
@@ -74,7 +74,7 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
             if (v == 0) {
                 empty_cnt++;
             } else {
-                v_pos = (v > 0);
+                v_pos = v > 0;
                 if (v_pos) {
                     score += log_v * pos_w[idx];
                     if (v > max_val) { max_val = v; max_log = log_v; max_pos_r = r; max_pos_c = c; }
@@ -86,18 +86,16 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
                     if (c < 3 && grid[idx + 1] > 0) best_nbr = max(best_nbr, grid[idx + 1]);
                     if (v <= -8) {
                         for (int c2 = 0; c2 < 4; c2++) {
-                            int nbr = grid[r * 4 + c2];
-                            if (nbr > 0 && nbr > best_nbr) best_nbr = nbr;
+                            if (int nbr = grid[r * 4 + c2]; nbr > 0 && nbr > best_nbr) best_nbr = nbr;
                         }
                         for (int r2 = 0; r2 < 4; r2++) {
-                            int nbr = grid[r2 * 4 + c];
-                            if (nbr > 0 && nbr > best_nbr) best_nbr = nbr;
+                            if (int nbr = grid[r2 * 4 + c]; nbr > 0 && nbr > best_nbr) best_nbr = nbr;
                         }
                     }
                     if (best_nbr > 0) {
-                        if (v <= -8 && (-v) * best_nbr > 65536) { /* skip */ }
+                        if (v <= -8 && -v * best_nbr > 65536) { /* skip */ }
                         else {
-                            int w = (v <= -8) ? EVAL_NEG_W8 : EVAL_NEG_W_OTHER;
+                            int w = v <= -8 ? EVAL_NEG_W8 : EVAL_NEG_W_OTHER;
                             score += (log_v + ilog2(best_nbr)) * w;
                         }
                     }
@@ -105,8 +103,7 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
             }
 
             if (c < 3) {
-                int b = grid[idx + 1];
-                if (v_pos && b > 0) {
+                if (int b = grid[idx + 1]; v_pos && b > 0) {
                     int lb = log_grid[idx + 1];
                     int diff = log_v - lb;
                     if (diff < 0) diff = -diff;
@@ -117,8 +114,7 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
             }
 
             if (r < 3) {
-                int b = grid[idx + 4];
-                if (v_pos && b > 0) {
+                if (int b = grid[idx + 4]; v_pos && b > 0) {
                     int lb = log_grid[idx + 4];
                     int diff = log_v - lb;
                     if (diff < 0) diff = -diff;
@@ -130,21 +126,20 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
         }
     }
 
-    int mono_extra = (max_log - 8) * EVAL_MONO_EXTRA;
-    if (mono_extra > 0) {
+    if (int mono_extra = (max_log - 8) * EVAL_MONO_EXTRA; mono_extra > 0) {
         for (int r = 0; r < 4; r++) {
             for (int c = 0; c < 3; c++) {
                 int idx = r * 4 + c;
-                int a = grid[idx], b = grid[idx + 1];
-                if (a > 0 && b > 0)
+                int b = grid[idx + 1];
+                if (int a = grid[idx]; a > 0 && b > 0)
                     score += (a >= b ? 1 : -1) * row_sign * log_grid[idx] * mono_extra;
             }
         }
         for (int c = 0; c < 4; c++) {
             for (int r = 0; r < 3; r++) {
                 int idx = r * 4 + c;
-                int a = grid[idx], b = grid[idx + 4];
-                if (a > 0 && b > 0)
+                int a = grid[idx];
+                if (int b = grid[idx + 4]; a > 0 && b > 0)
                     score += (a >= b ? 1 : -1) * col_sign * log_grid[idx] * mono_extra;
             }
         }
@@ -168,8 +163,8 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
                 int a = grid[r * 4 + c], b = grid[r * 4 + c + 1];
                 if (a == 0 || b == 0) continue;
                 if (a > 0 && a == b) merge_cnt++;
-                if (a > 0 && b < 0 && (-b) * a <= 65536) merge_cnt++;
-                if (a < 0 && b > 0 && (-a) * b <= 65536) merge_cnt++;
+                if (a > 0 && b < 0 && -b * a <= 65536) merge_cnt++;
+                if (a < 0 && b > 0 && -a * b <= 65536) merge_cnt++;
             }
         // 垂直相邻可合并对
         for (int c = 0; c < 4; c++)
@@ -177,20 +172,18 @@ __host__ __device__ static int evaluate(const int *grid, const int *pos_w, int c
                 int a = grid[r * 4 + c], b = grid[(r + 1) * 4 + c];
                 if (a == 0 || b == 0) continue;
                 if (a > 0 && a == b) merge_cnt++;
-                if (a > 0 && b < 0 && (-b) * a <= 65536) merge_cnt++;
-                if (a < 0 && b > 0 && (-a) * b <= 65536) merge_cnt++;
+                if (a > 0 && b < 0 && -b * a <= 65536) merge_cnt++;
+                if (a < 0 && b > 0 && -a * b <= 65536) merge_cnt++;
             }
         // ≤-8 非相邻合并潜力（行/列方向各计 1）
         for (int i = 0; i < 16; i++) {
             if (grid[i] > -8) continue;
             int r = i >> 2, c = i & 3;
             for (int cc1 = 0; cc1 < 4; cc1++) {
-                int b = grid[r * 4 + cc1];
-                if (b > 0 && cc1 != c && (-grid[i]) * b <= 65536) { merge_cnt++; break; }
+                if (int b = grid[r * 4 + cc1]; b > 0 && cc1 != c && -grid[i] * b <= 65536) { merge_cnt++; break; }
             }
             for (int rr = 0; rr < 4; rr++) {
-                int b = grid[rr * 4 + c];
-                if (b > 0 && rr != r && (-grid[i]) * b <= 65536) { merge_cnt++; break; }
+                if (int b = grid[rr * 4 + c]; b > 0 && rr != r && -grid[i] * b <= 65536) { merge_cnt++; break; }
             }
         }
 

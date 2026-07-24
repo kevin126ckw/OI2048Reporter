@@ -2,22 +2,23 @@
 #include "evaluate.cuh"
 
 // ─── 贪心回放（与 GPU 逻辑一致）────────────────────────────────────────
-HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score) {
+HostSimResult replay_game(const uint32_t rng_seed, const int strategy) {
     HostSimResult res;
     res.score = 0;
     res.steps = 0;
     res.history.clear();
 
-    int cr = (strategy >= 2) ? 3 : 0;
-    int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
+    const int cr = strategy >= 2 ? 3 : 0;
+    const int cc = strategy == 1 || strategy == 3 ? 3 : 0;
     int pos_w[16];
     for (int i = 0; i < 16; i++) {
-        int r = i >> 2, c = i & 3;
+        const int r = i >> 2;
+        const int c = i & 3;
         pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     uint32_t rng = rng_seed;
-    int grid[16] = {0};
+    int grid[16] = {};
 
     // 初始状态: before=全空, after=初始两方块
     HistoryEntry init{};
@@ -37,8 +38,7 @@ HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score) {
             bool moved;
             apply_move(temp, dir, &moved);
             if (!moved) continue;
-            int e = evaluate(temp, pos_w, cr, cc);
-            if (e > best_eval) {
+            if (const int e = evaluate(temp, pos_w, cr, cc); e > best_eval) {
                 best_eval = e;
                 best_dir = dir;
             }
@@ -66,7 +66,7 @@ HostSimResult replay_game(uint32_t rng_seed, int strategy, int target_score) {
 // 根据实际生成概率加权：2(78.3%), 4(8.7%), -1(11.2%), -2(1.8%)
 // 为保持速度，每空格只采样 2 和 -1 两种方块（覆盖 ~89.5% 概率），
 // 剩余 10.5% 用 tile=2 的结果近似
-static int choose_move_expectimax(const int *grid, int cr, int cc, const int *pos_w) {
+static int choose_move_expectimax(const int *grid, const int cr, const int cc, const int *pos_w) {
     // 加权系数（总权重 1000）
     // 2: 783, 4: 87(近似用2), -1: 112, -2: 18(近似用2)
     // → tile2 综合权重 = 783 + 87 + 18 = 888, tile-1 权重 = 112
@@ -89,18 +89,17 @@ static int choose_move_expectimax(const int *grid, int cr, int cc, const int *po
         for (int i = 0; i < 16; i++) if (temp[i] == 0) empty[empty_cnt++] = i;
 
         if (empty_cnt == 0) {
-            int e = evaluate(temp, pos_w, cr, cc);
-            if (e > best_expected) { best_expected = e; best_dir = dir; }
+            if (const int e = evaluate(temp, pos_w, cr, cc); e > best_expected) { best_expected = e; best_dir = dir; }
             continue;
         }
 
         // 跳跃采样（最多 4 个样本，每个样本尝试 2 和 -1 两种方块）
-        int step = (empty_cnt <= 4) ? 1 : (empty_cnt / 4);
+        const int step = empty_cnt <= 4 ? 1 : empty_cnt / 4;
         int samples = 0;
         int weighted_sum = 0;
 
         for (int si = 0; si < empty_cnt && samples < 4; si += step) {
-            int pos = empty[si];
+            const int pos = empty[si];
 
             // ── 放置 tile=2 并做 1-ply 最佳应对 ──
             int best_r2 = -2000000000;
@@ -114,8 +113,7 @@ static int choose_move_expectimax(const int *grid, int cr, int cc, const int *po
                     bool moved2;
                     apply_move(temp2, d2, &moved2);
                     if (!moved2) continue;
-                    int e = evaluate(temp2, pos_w, cr, cc);
-                    if (e > best_r2) best_r2 = e;
+                    if (const int e = evaluate(temp2, pos_w, cr, cc); e > best_r2) best_r2 = e;
                 }
                 if (best_r2 < -1900000000)
                     best_r2 = evaluate(after_tile, pos_w, cr, cc);
@@ -133,8 +131,7 @@ static int choose_move_expectimax(const int *grid, int cr, int cc, const int *po
                     bool moved2;
                     apply_move(temp2, d2, &moved2);
                     if (!moved2) continue;
-                    int e = evaluate(temp2, pos_w, cr, cc);
-                    if (e > best_rn1) best_rn1 = e;
+                    if (const int e = evaluate(temp2, pos_w, cr, cc); e > best_rn1) best_rn1 = e;
                 }
                 if (best_rn1 < -1900000000)
                     best_rn1 = evaluate(after_tile, pos_w, cr, cc);
@@ -143,9 +140,8 @@ static int choose_move_expectimax(const int *grid, int cr, int cc, const int *po
             weighted_sum += best_r2 * W2 + best_rn1 * WN1;
             samples++;
         }
-        int expected = weighted_sum / (samples * WSUM);
 
-        if (expected > best_expected) {
+        if (const int expected = weighted_sum / (samples * WSUM); expected > best_expected) {
             best_expected = expected;
             best_dir = dir;
         }
@@ -154,22 +150,23 @@ static int choose_move_expectimax(const int *grid, int cr, int cc, const int *po
     return best_dir;
 }
 
-HostSimResult replay_game_expectimax(uint32_t rng_seed, int strategy, int target_score) {
+HostSimResult replay_game_expectimax(const uint32_t rng_seed, const int strategy) {
     HostSimResult res;
     res.score = 0;
     res.steps = 0;
     res.history.clear();
 
-    int cr = (strategy >= 2) ? 3 : 0;
-    int cc = (strategy == 1 || strategy == 3) ? 3 : 0;
+    const int cr = strategy >= 2 ? 3 : 0;
+    const int cc = strategy == 1 || strategy == 3 ? 3 : 0;
     int pos_w[16];
     for (int i = 0; i < 16; i++) {
-        int r = i >> 2, c = i & 3;
+        const int r = i >> 2;
+        const int c = i & 3;
         pos_w[i] = dist_w_int[abs(r - cr) + abs(c - cc)];
     }
 
     uint32_t rng = rng_seed;
-    int grid[16] = {0};
+    int grid[16] = {};
 
     HistoryEntry init{};
     for (int &i : init.before) i = 0;
@@ -179,7 +176,7 @@ HostSimResult replay_game_expectimax(uint32_t rng_seed, int strategy, int target
     res.history.push_back(init);
 
     while (can_move(grid) && res.steps < MAX_STEPS) {
-        int best_dir = choose_move_expectimax(grid, cr, cc, pos_w);
+        const int best_dir = choose_move_expectimax(grid, cr, cc, pos_w);
 
         if (best_dir < 0) break;
 
