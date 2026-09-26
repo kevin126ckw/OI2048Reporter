@@ -7,7 +7,7 @@
 constexpr int MAX_STEPS = 2048;
 constexpr int THREADS_PER_BLOCK = 256;
 constexpr int NUM_BLOCKS = 1024;
-constexpr int NUM_THREADS = THREADS_PER_BLOCK * NUM_BLOCKS; // 65536
+constexpr int NUM_THREADS = THREADS_PER_BLOCK * NUM_BLOCKS; // 262144（每批的模拟局数，可由多张 GPU 共同分担）
 constexpr int DEFAULT_SEARCH_BATCHES = 1024;
 
 // ─── RNG ────────────────────────────────────────────────────────────

@@ -2,9 +2,12 @@
 #include "evaluate.cuh"
 
 __global__ __launch_bounds__(256, 2) void simulate_games(const uint64_t base_seed,
-        const int target_score, SimResult *results) {
-    const int tid = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    if (tid >= NUM_THREADS) return;
+        const int target_score, const int tid_offset, const int thread_count,
+        SimResult *results) {
+    // local 是本切片内的线程下标，tid 是全局线程号（决定策略与随机种子）
+    const int local = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (local >= thread_count) return;
+    const int tid = tid_offset + local;
 
     const int strategy = tid & 3;
     const int cr = strategy >= 2 ? 3 : 0;
@@ -58,5 +61,5 @@ __global__ __launch_bounds__(256, 2) void simulate_games(const uint64_t base_see
         if (score >= target_score) break;
     }
 
-    results[tid].score = score;
+    results[local].score = score;
 }
